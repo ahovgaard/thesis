@@ -7,6 +7,12 @@ import System.Console.Haskeline
 import Syntax
 import Parser
 
+data TypeError = UndefinedVariableError Name
+               | TypeMismatchError Tp Tp
+               | HigherOrderError
+               | TypeError String
+  deriving (Show)
+
 -- Typing context.
 type Context = [(Name, Tp)]
 
@@ -16,10 +22,10 @@ emptyCtx = []
 extend :: Context -> Name -> Tp -> Context
 extend ctx s tp = (s, tp) : ctx
 
-lookupVar :: Context -> Name -> Either String Tp
+lookupVar :: Context -> Name -> Either TypeError Tp
 lookupVar ctx x = case lookup x ctx of
                     Just tp -> return tp
-                    Nothing -> Left "undefined variable"
+                    Nothing -> Left $ UndefinedVariableError x
 
 order :: Tp -> Int
 order TpInt             = 0
@@ -28,8 +34,11 @@ order (TpArrow tp1 tp2) = max (order tp1 + 1) (order tp2)
 order (TpPair  tp1 tp2) = max (order tp1) (order tp2)
 order (TpArray tp)      = order tp
 
+checkMatch :: Tp -> Tp -> Either TypeError ()
+checkMatch tp1 tp2 = when (tp1 /= tp2) $ Left (TypeMismatchError tp1 tp2)
+
 -- Type checking.
-typeOf :: Context -> Expr -> Either String Tp
+typeOf :: Context -> Expr -> Either TypeError Tp
 typeOf ctx expr = case expr of
   Var x             -> lookupVar ctx x
   Num _             -> return TpInt
@@ -38,37 +47,35 @@ typeOf ctx expr = case expr of
 
   Add e1 e2         -> do tp1 <- typeOf ctx e1
                           tp2 <- typeOf ctx e2
-                          if tp1 == TpInt && tp2 == TpInt
-                            then return TpInt
-                            else Left "type error"
+                          checkMatch tp1 TpInt
+                          checkMatch tp2 TpInt
+                          return TpInt
 
   LEq e1 e2         -> do tp1 <- typeOf ctx e1
                           tp2 <- typeOf ctx e2
-                          if tp1 == TpInt && tp2 == TpInt
-                            then return TpBool
-                            else Left "type error"
+                          checkMatch tp1 TpInt
+                          checkMatch tp2 TpInt
+                          return TpBool
 
   If e1 e2 e3       -> do tp1 <- typeOf ctx e1
                           tp2 <- typeOf ctx e2
                           tp3 <- typeOf ctx e3
-                          when (tp1 /= TpBool)
-                               (Left "guard of conditional is not a boolean")
-                          when (tp2 /= tp3)
-                               (Left "braches of conditional have different types")
-                          when (order tp2 /= 0)
-                               (Left "conditional must not have arrow type")
+                          checkMatch tp1 TpBool
+                          checkMatch tp2 tp3
+                          when (order tp2 /= 0) $ Left HigherOrderError
                           return tp2
 
-  Lam x tp1 e2      -> let ctx' = extend ctx x tp1
-                       in typeOf ctx' e2 >>= \tp2 -> return $ TpArrow tp1 tp2
+  Lam x tp1 e2      -> do let ctx' = extend ctx x tp1
+                          tp2 <- typeOf ctx' e2
+                          return $ TpArrow tp1 tp2
 
   App e1 e2         -> do tp1 <- typeOf ctx e1
                           tp2 <- typeOf ctx e2
                           case tp1 of
                             TpArrow tp2' tp
                               | tp2 == tp2' -> return tp
-                              | otherwise   -> Left "parameter type mismatch"
-                            _               -> Left "arrow type expected"
+                              | otherwise   -> Left $ TypeMismatchError tp2 tp2'
+                            _ -> Left $ TypeError "function type expected"
 
   Let x e1 e2       -> do tp1 <- typeOf ctx e1
                           let ctx' = extend ctx x tp1
@@ -81,55 +88,54 @@ typeOf ctx expr = case expr of
   Fst e0            -> do tp0 <- typeOf ctx e0
                           case tp0 of
                             TpPair tp1 _ -> return tp1
-                            _            -> Left "expected pair type"
+                            _            -> Left $ TypeError "product type expected"
 
   Snd e0            -> do tp0 <- typeOf ctx e0
                           case tp0 of
                             TpPair _ tp2 -> return tp2
-                            _            -> Left "expected pair type"
+                            _            -> Left $ TypeError "product type expected"
 
   ArrayLit es       -> do tps <- mapM (typeOf ctx) es
                           case tps of
-                            [] -> Left "unknown type of empty array"
+                            [] -> Left $ TypeError "unknown type of empty array"
                             (tp : tps') | all (== tp) tps' ->
                                             if order tp == 0
                                             then return $ TpArray tp
-                                            else Left "functional type in array"
-                            _ -> Left "type mismatch in array"
+                                            else Left HigherOrderError
+                            _ -> Left $ TypeError "type mismatch in array"
 
   Index e0 e1       -> do tp0 <- typeOf ctx e0
                           tp1 <- typeOf ctx e1
-                          when (tp1 /= TpInt)   $ Left "invalid type of array index"
-                          when (order tp1 /= 0) $ Left "function type in array"
+                          checkMatch tp1 TpInt
+                          when (order tp0 /= 0) $ Left HigherOrderError
                           case tp0 of
                             TpArray tp -> return tp
-                            _          -> Left "type mismatch"
+                            _          -> Left $ TypeError "type mismatch"
 
   Update e0 e1 e2   -> do tp0 <- typeOf ctx e0
                           tp1 <- typeOf ctx e1
                           tp2 <- typeOf ctx e2
-                          when (order tp1 /= 0) $ Left "function type in array"
-                          when (tp1 /= TpInt)   $ Left "invalid type of array index"
+                          when (order tp2 /= 0) $ Left HigherOrderError
+                          checkMatch tp1 TpInt
                           case tp0 of
                             tp@(TpArray tp')
                               | tp2 == tp' -> return tp
-                            _              -> Left "type mismatch"
+                            _              -> Left $ TypeMismatchError tp0 (TpArray tp2)
 
   Length e0         -> do tp0 <- typeOf ctx e0
-                          when (order tp0 /= 0) $ Left "function type in array"
+                          when (order tp0 /= 0) $ Left HigherOrderError
                           case tp0 of
                             TpArray _ -> return TpInt
-                            _         -> Left "expected array type"
+                            _         -> Left $ TypeError "expected array type"
 
   Loop x e1 y e2 e3 -> do tp1 <- typeOf ctx e1
                           tp2 <- typeOf ctx e2
-                          when (order tp1 /= 0) $ Left "function type in loop"
-                          when (tp2 /= TpInt)   $ Left "invalid type of loop bound"
+                          when (order tp1 /= 0) $ Left HigherOrderError
+                          checkMatch tp2 TpInt
                           let ctx' = extend (extend ctx x tp1) y tp2
                           tp3 <- typeOf ctx' e3
-                          if tp1 == tp3
-                            then return tp3
-                            else Left "type mismatch"
+                          checkMatch tp1 tp3
+                          return tp3
 
 -- Substitutes s for x in t.
 -- Assumes that variables are unique for now.
