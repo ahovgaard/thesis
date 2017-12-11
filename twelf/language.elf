@@ -1,0 +1,409 @@
+% --- Natural numbers
+
+nat : type. %name nat N.
+
+0 : nat.
+s : nat -> nat.
+
+% Maximum of two natural numbers.
+max : nat -> nat -> nat -> type.
+
+max/00 : max 0 0 0.
+max/0s : max 0 (s N) (s N).
+max/s0 : max (s N) 0 (s N).
+max/ss : max (s N1) (s N2) (s N)
+          <- max N1 N2 N.
+
+%query 1 * D : max (s (s 0)) (s (s (s 0))) (s (s (s 0))).
+
+
+% --- Syntax of types
+
+tp : type. %name tp T.
+
+tint   : tp.
+tbool  : tp.
+tarrow : tp -> tp -> tp.
+tpair  : tp -> tp -> tp.
+tarray : tp -> tp.
+
+
+% -- Definition of order
+
+order : tp -> nat -> type.
+
+order/tint   : order tint  0.
+order/tbool  : order tbool 0.
+order/tarrow : order (tarrow T1 T2) N
+                <- order T1 N1
+                <- order T2 N2
+                <- max (s N1) N2 N.
+order/tpair  : order (tpair T1 T2) N
+                <- order T1 N1
+                <- order T2 N2
+                <- max N1 N2 N.
+order/tarray : order (tarray T) N
+                <- order T N.
+
+%query 1 * D : order (tarrow tint tint) (s 0).
+%query 1 * D : order (tarrow tint (tarrow tint tint)) (s 0).
+%query 1 * D : order (tarrow (tarrow tint tint) tint) (s (s 0)).
+%query 1 * D : order (tpair (tarrow tint tint) tbool) (s 0).
+%query 1 * D : order (tarray (tarrow tint tint)) (s 0).
+
+
+% --- Syntax of expressions
+
+exp : type. %name exp E.
+
+% Base values and operations
+num    : nat -> exp.
+true   : exp.
+false  : exp.
+plus   : exp -> exp -> exp.
+leq    : exp -> exp -> exp.
+
+% Conditionals
+if     : exp -> exp -> exp -> exp.
+
+% Abstraction and application
+lam    : tp -> (exp -> exp) -> exp.
+app    : exp -> exp -> exp.
+
+% Let-expressions
+let    : exp -> (exp -> exp) -> exp.
+
+% Binary products
+pair   : exp -> exp -> exp.
+fst    : exp -> exp.
+snd    : exp -> exp.
+
+% Arrays and array operations
+% TODO arrays
+index  : exp -> exp -> exp.
+update : exp -> exp -> exp -> exp.
+length : exp -> exp.
+
+% Loops
+loop   : exp -> exp -> (exp -> exp -> exp) -> exp.
+
+
+% --- Syntax of values
+
+%% Judgment that an expression is not a pair.
+%% TODO: Clearly this ought to be made simpler if possible.
+not-pair : exp -> type.
+not-pair/num    : not-pair (num N).
+not-pair/true   : not-pair true.
+not-pair/false  : not-pair false.
+not-pair/plus   : not-pair (plus E1 E2).
+not-pair/leq    : not-pair (leq E1 E2).
+not-pair/if     : not-pair (if E1 E2 E3).
+not-pair/lam    : not-pair (lam T E).
+not-pair/app    : not-pair (app E1 E2).
+not-pair/let    : not-pair (let E1 E2).
+not-pair/fst    : not-pair (fst E0).
+not-pair/snd    : not-pair (snd E0).
+not-pair/index  : not-pair (index E0 E1).
+not-pair/update : not-pair (update E0 E1 E2).
+not-pair/length : not-pair (length E0).
+not-pair/loop   : not-pair (loop E1 E2 E3).
+
+%% Value judgment
+value : exp -> type. %name value VP.
+
+value/num    : value (num N).
+value/true   : value true.
+value/false  : value false.
+
+value/plus   : value (plus E1 E2)
+                <- value E1
+                <- value E2.
+
+value/leq    : value (leq E1 E2)
+                <- value E1
+                <- value E2.
+
+value/if     : value (if E1 E2 E3)
+                <- value E1
+                <- value E2
+                <- value E3.
+
+value/lam0   : value (lam T [x] E x)
+                <- ({x:exp} value x -> value (E x))
+                <- order T 0.
+
+value/lamN   : value (lam T [x] E x)
+                <- order T (s N).
+
+value/pair   : value (pair E1 E2)
+                <- value E1
+                <- value E2.
+
+value/fst    : value (fst E0)
+                <- value E0
+                <- not-pair E0.
+
+value/snd    : value (snd E0)
+                <- value E0
+                <- not-pair E0.
+
+% value/array : value (array
+
+value/index  : value (index E0 E1)
+                <- value E0
+                <- value E1.
+
+value/update : value (update E0 E1 E2)
+                <- value E0
+                <- value E1
+                <- value E2.
+
+value/length : value (length E0)
+                <- value E0.
+
+value/loop   : value (loop E1 E2 E3)
+                <- value E0
+                <- value E1
+                <- value E2.
+
+%% Examples
+%query 1 * D : value (plus (num (s 0)) (num (s (s 0)))).
+%query 1 * D : value (lam tint [y] y).
+
+
+% --- Typing judgment
+
+of : exp -> tp -> type. %name of OP.
+
+of/num    : of (num N) tint.
+
+of/true   : of true  tbool.
+of/false  : of false tbool.
+
+of/plus   : of (plus E1 E2) tint
+             <- of E1 tint
+             <- of E2 tint.
+
+of/leq    : of (leq E1 E2) tbool
+             <- of E1 tint
+             <- of E2 tint.
+
+of/if     : of (if E1 E2 E3) T
+             <- of E1 tbool
+             <- of E2 T
+             <- of E3 T
+             <- order T 0.
+
+of/lam    : of (lam T [x] E x) (tarrow T T')
+             <- {x:exp} of x T -> of (E x) T'.
+
+of/app    : of (app E1 E2) T
+             <- of E1 (tarrow T2 T)
+             <- of E2 T2.
+
+of/let    : of (let E1 [x] E2 x) T2
+             <- of E1 T1
+             <- {x:exp} of x T1 -> of (E2 x) T2.
+
+of/pair   : of (pair E1 E2) (tpair T1 T2)
+             <- of E1 T1
+             <- of E2 T2.
+
+of/fst    : of (fst E0) T1
+             <- of E0 (tpair T1 T2).
+
+of/snd    : of (snd E0) T2
+             <- of E0 (tpair T1 T2).
+
+% TODO: array
+
+of/index  : of (index E0 E1) T
+             <- of E0 (tarray T)
+             <- of E1 tint
+             <- order T 0.
+
+of/write  : of (update E0 E1 E2) T
+             <- of E0 (tarray T)
+             <- of E1 tint
+             <- of E2 T
+             <- order T 0.
+
+of/length : of (length E0) tint
+             <- of E0 (tarray T)
+             <- order T 0.
+
+of/loop   : of (loop E1 E2 E3) T
+             <- of E1 T
+             <- of E2 tint
+             <- ({x:exp} {y:exp} of x T -> of y tint -> of (E3 x y) T)
+             <- order T 0.
+
+% Some examples
+%query 1 * D : of (num (s (s 0))) tint.
+%query 1 * D : of true tbool.
+%query 1 * D : of false tbool.
+%query 1 * D : of (plus (num (s (s 0))) (num (s 0))) tint.
+%query 1 * D : of (leq (num (s (s 0))) (num (s 0))) tbool.
+
+ex-exp0 : exp = lam (tarrow tint tint) [f] app f (num (s 0)).
+ex-exp1 : exp = (lam tint [x] plus x x).
+
+%query 1 * D : of ex-exp0 T.
+%query 1 * D : of ex-exp1 T.
+%query 1 * D : of (app ex-exp0 ex-exp1) tint.
+
+% Expected to not be typeable since conditional has function type
+ex-exp2 : exp = if (leq (num (s 0)) (num 0)) ex-exp1 ex-exp1.
+
+%query 0 * D : of ex-exp2 T.
+
+% Pair of higher-order types are okay though
+ex-exp3 : exp = pair ex-exp0 ex-exp1.
+
+%query 1 * D : of (pair true (num 0)) (tpair tbool tint).
+%query 1 * D : of (pair ex-exp0 ex-exp1) T.
+
+% Loops
+ex-exp4 : exp = loop (num (s (s 0))) (num (s (s (s 0)))) ([x] [y] plus x y).
+% Should not be typeable since loops must not return functions
+ex-exp5 : exp = loop (lam tint [x] plus x x) (num (s (s (s 0)))) ([x] [y] x).
+
+%query 1 * D : of ex-exp4 tint.
+%query 0 * D : of ex-exp5 T.
+
+
+% --- Small-step defunctionalization
+
+step : exp -> exp -> type. %name step SP.
+
+step/plus1   : step (plus E1 E2) (plus E1' E2)
+                <- step E1 E1'.
+
+step/plus2   : step (plus V1 E2) (plus V1 E2')
+                <- value V1
+                <- step E2 E2'.
+
+step/leq1    : step (leq E1 E2) (leq E1' E2)
+                <- step E1 E1'.
+
+step/leq2    : step (leq V1 E2) (leq V1 E2')
+                <- value V1
+                <- step E2 E2'.
+
+step/if1     : step (if E1 E2 E3) (if E1' E2 E3)
+                <- step E1 E1'.
+
+step/if2     : step (if V1 E2 E3) (if V1 E2' E3)
+                <- value V1
+                <- step E2 E2'.
+
+step/if3     : step (if V1 V2 E3) (if V1 V2 E3')
+                <- value V1
+                <- value V2
+                <- step E3 E3'.
+
+% Lambda and application
+step/lam0    : step (lam T E0) (lam T E0')
+                <- order T 0
+                <- ({x:exp} value x -> step (E0 x) (E0' x)).
+
+step/app1    : step (app E1 E2) (app E1' E2)
+                <- step E1 E1'.
+
+step/app2    : step (app V1 E2) (app V1 E2')
+                <- value V1
+                <- step E2 E2'.
+
+step/app     : step (app (lam T [x] E0 x) V2) (E0 V2)
+                <- value V2.
+
+% Let-expressions
+step/let1    : step (let E1 E2) (let E1' E2)
+                <- step E1 E1'.
+
+step/let     : step (let V1 [x] E2 x) (E2 V1)
+                <- value V1.
+
+% Pairs
+step/pair1   : step (pair E1 E2) (pair E1' E2)
+                <- step E1 E1'.
+
+step/pair2   : step (pair V1 E2) (pair V1 E2')
+                <- value V1
+                <- step E2 E2'.
+
+step/fst1    : step (fst E0) (fst E0')
+                <- step E0 E0'.
+
+step/fst     : step (fst (pair V1 V2)) V1.
+
+% Arrays
+
+%% TODO: array
+
+step/index1  : step (index E0 E1) (index E0' E1)
+                <- step E0 E0'.
+
+step/index2  : step (index V0 E1) (index V0 E1')
+                <- value V0
+                <- step E1 E1'.
+
+step/update1 : step (update E0 E1 E2) (update E0' E1 E2)
+                <- step E0 E0'.
+
+step/update2 : step (update V0 E1 E2) (update V0 E1' E2)
+                <- value V0
+                <- step E1 E1'.
+
+step/update3 : step (update V0 V1 E2) (update V0 V1 E2')
+                <- value V0
+                <- value V1
+                <- step E2 E2'.
+
+step/length1 : step (length E0) (length E0')
+                <- step E0 E0'.
+
+step/loop1   : step (loop E1 E2 E3) (loop E1' E2 E3)
+                <- step E1 E1'.
+
+step/loop2   : step (loop V1 E2 E3) (loop V1 E2' E3)
+                <- value V1
+                <- step E2 E2'.
+
+step/loop3   : step (loop V1 V2 [x] [y] E3 x y) (loop V1 V2 [x] [y] E3' x y)
+                <- value V1
+                <- value V2
+                <- ({x:exp} {y:exp} value x -> value y -> step (E3 x y) (E3' x y)).
+
+% Iterated step relation
+steps : exp -> exp -> type. %name steps SS.
+
+steps/0 : steps E E.
+
+steps/m : steps E E'
+           <- step E E''
+           <- steps E'' E'.
+
+% Small-step evaluation
+stepsto : exp -> exp -> type.
+
+stepsto/ : stepsto E V
+            <- steps E V
+            <- value V.
+
+
+%% Examples
+ex-exp6 : exp = app (lam tint [x] x) (num (s (s 0))).
+
+%query 1 * D : step ex-exp6 E.
+
+ex-exp7 : exp = lam tint ([y] app (lam tint [x] x) y).
+
+%query 1 * D : step ex-exp7 E.
+
+ex-exp8 : exp = app (lam (tarrow tint tint) [f] (lam tint [x] (app f (app f x))))
+                    (lam tint [x] plus x x).
+
+%query 1 * D : step ex-exp8 E.
+%query 1 * D : stepsto ex-exp8 E.
