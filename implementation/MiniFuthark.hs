@@ -2,6 +2,8 @@ module MiniFuthark where
 
 import Control.Monad
 import Control.Monad.Trans
+import Data.Set (Set)
+import qualified Data.Set as Set
 import System.Console.Haskeline
 
 import Syntax
@@ -168,37 +170,104 @@ subst x s t = case t of
                                (if x == y || x == z then e3 else subst x s e3)
 
 
--- Defunctionalization.
-defunc :: Expr -> Expr
-defunc expr = case expr of
-  Var x             -> expr
-  Num n             -> expr
-  TrueLit           -> expr
-  FalseLit          -> expr
-  Add e1 e2         -> Add (defunc e1) (defunc e2)
-  LEq e1 e2         -> LEq (defunc e1) (defunc e2)
-  If e1 e2 e3       -> If (defunc e1) (defunc e2) (defunc e3)
-  Lam x tp e0
-    | order tp == 0 -> Lam x tp (defunc e0)
-    | otherwise     -> expr
-  App e1 e2         -> case defunc e1 of
-                         Lam x tp2 e0 -> defunc $ subst x (defunc e2) e0
-                         -- should not be possible if expression is well-typed
-                         _ -> error "application could not be specialized"
-  Let x e1 e2       -> let e1' = defunc e1
-                       in defunc $ subst x e1' e2
-  Pair e1 e2        -> Pair (defunc e1) (defunc e2)
-  Fst e0            -> case defunc e0 of
-                         Pair e1 _ -> e1
-                         e0'       -> Fst e0'
-  Snd e0            -> case defunc e0 of
-                         Pair _ e2 -> e2
-                         e0'       -> Snd e0'
-  ArrayLit es       -> ArrayLit $ map defunc es
-  Index e0 e1       -> Index (defunc e0) (defunc e1)
-  Update e0 e1 e2   -> Update (defunc e0) (defunc e1) (defunc e2)
-  Length e0         -> Length (defunc e0)
-  Loop x e1 y e2 e3 -> Loop x (defunc e1) y (defunc e2) (defunc e3)
+
+data StaticVal = Dynamic
+               | Lambda Name Tp Expr [Name]
+               | Tuple StaticVal StaticVal
+  deriving (Show)
+
+type Env = [(Name, StaticVal)]
+
+emptyEnv = []
+
+-- Computes the free variables of an expression in deterministic order.
+freeVars :: Expr -> [Name]
+freeVars = Set.elems . fvSet
+  where fvSet expr = case expr of
+          Var x       -> Set.singleton x
+          Num _       -> Set.empty
+          TrueLit     -> Set.empty
+          FalseLit    -> Set.empty
+          Add e1 e2   -> fvSet e1 `Set.union` fvSet e2
+          LEq e1 e2   -> fvSet e1 `Set.union` fvSet e2
+          Lam x tp e0 -> Set.delete x (fvSet e0)
+          App e1 e2   -> fvSet e1 `Set.union` fvSet e2
+          Let x e1 e2 -> fvSet e1 `Set.union` Set.delete x (fvSet e2)
+          -- todo: finish
+
+-- Generates a nested sequence of let-bindings, binding the free
+-- variables to the corresponding fields in a record.
+letBindFV :: Name -> [Name] -> Expr -> Expr
+letBindFV _ []     e = e
+letBindFV x (y:ys) e = Let y (Select (Var x) y) $ letBindFV x ys e
+
+
+
+defunc :: Env -> Expr -> (Expr, StaticVal)
+defunc env expr = case expr of
+  Var x          -> case lookup x env of
+                      Just sv -> (expr, sv)
+                      Nothing -> error $ "variable " ++ x ++ " out of scope"
+
+  Num n          -> (Num n,    Dynamic)
+  TrueLit        -> (TrueLit,  Dynamic)
+  FalseLit       -> (FalseLit, Dynamic)
+
+  Add e1 e2      -> case defunc env e1 of
+                      (e1', Dynamic) -> case defunc env e2 of
+                                          (e2', Dynamic) -> (Add e1' e2', Dynamic)
+                      _ -> error "addition of static expressions"
+
+  Lam x tp e0    -> let fv = freeVars expr
+                    in (Record $ map (\s -> (s, Var s)) fv, Lambda x tp e0 fv)
+
+  App (Var f) e2 -> case lookup f env of
+                      Just (Lambda x tp e0 fv) ->
+                        case defunc env e2 of
+                          (e2', Dynamic) -> defunc env (letBindFV f fv (subst x e2' e0))
+                          _ -> error "application with static argument"
+                      Nothing -> error $ "variable " ++ f ++ " out of scope"
+
+  App e1 e2      -> case defunc env e1 of
+                      (e1', Lambda x tp e0 fv) ->
+                        case defunc env e2 of
+                          (e2', Dynamic) ->
+                            defunc env $ Let "env" e1' (letBindFV "env" fv (subst x e2' e0))
+                      _ -> error $ "applied non-function: " ++ show e1
+
+  Let x e1 e2    -> let (e1', sv1) = defunc env e1
+                        (e2', sv)  = defunc ((x, sv1) : env) e2
+                    in (Let x e1' e2', sv)
+
+  Pair e1 e2     -> let (e1', sv1) = defunc env e1
+                        (e2', sv2) = defunc env e2
+                    in (Pair e1' e2', Tuple sv1 sv2)
+
+  Fst e0         -> case defunc env e0 of
+                      (e0', Tuple sv1 _) -> (Fst e0', sv1)
+                      (e0', Dynamic)     -> (Fst e0', Dynamic)
+                      _ -> error $ "projection of an expression that is neither "
+                                ++ "dynamic nor a statically known pair"
+
+  Snd e0         -> case defunc env e0 of
+                      (e0', Tuple _ sv2) -> (Snd e0', sv2)
+                      (e0', Dynamic)     -> (Snd e0', Dynamic)
+                      _ -> error $ "projection of an expression that is neither "
+                                ++ "dynamic nor a statically known pair"
+
+  Select e0 l    -> (Select e0 l, Dynamic)
+  --Select e0 l    -> case defunc env e0 of
+  --                    (e0', Dynamic) -> (e0', Dynamic)
+  --                    e -> error $ "not handled in select: " ++ show e
+
+  Record xs      -> let f (x, e) =
+                          case defunc env e of
+                            (e', Dynamic) -> (x, e')
+                            _ -> error "static expression in record"
+                    in (Record $ map f xs, Dynamic)
+
+
+  _ -> error $ "missing case for: " ++ show expr
 
 
 -- Simple haskeline REPL
@@ -210,7 +279,7 @@ process s = case parseString s of
       Left tpErr -> putStrLn $ "Type error: " ++ show tpErr
       Right tp   -> do
         putStrLn $ "Type:\n\t"   ++ show tp
-        putStrLn $ "Result:\n\t" ++ show (defunc expr)
+        putStrLn $ "Result:\n\t" ++ show (defunc emptyEnv expr)
 
 main :: IO ()
 main = runInputT defaultSettings loop

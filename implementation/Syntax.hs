@@ -29,4 +29,8 @@ data Expr = Var Name
           | Update Expr Expr Expr
           | Length Expr
           | Loop Name Expr Name Expr Expr
+
+          | Record [(Name, Expr)]
+          | Select Expr Name
+
   deriving (Show)
