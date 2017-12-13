@@ -33,4 +33,4 @@ data Expr = Var Name
           | Record [(Name, Expr)]
           | Select Expr Name
 
-  deriving (Show)
+  deriving (Show, Eq)

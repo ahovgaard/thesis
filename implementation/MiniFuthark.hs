@@ -1,14 +1,20 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+
 module MiniFuthark where
 
 import Control.Monad
+import Control.Monad.Except
+import Control.Monad.Reader
+import Control.Monad.State
 import Control.Monad.Trans
 import Data.Set (Set)
 import qualified Data.Set as Set
 import System.Console.Haskeline
 
-import Parser
 import Syntax
+import Parser
 import TypeChecker
+
 
 -- Substitutes s for x in t.
 -- Assumes that variables are unique for now.
@@ -45,11 +51,16 @@ subst x s t = case t of
 data StaticVal = Dynamic
                | Lambda Name Tp Expr [Name]
                | Tuple StaticVal StaticVal
-  deriving (Show)
+               | Rcd [(Name, StaticVal)]
+  deriving (Show, Eq)
 
 type Env = [(Name, StaticVal)]
 
+emptyEnv :: Env
 emptyEnv = []
+
+extendEnv :: Name -> StaticVal -> Env -> Env
+extendEnv x sv env = (x, sv) : env
 
 -- Computes the free variables of an expression in deterministic order.
 freeVars :: Expr -> [Name]
@@ -73,72 +84,106 @@ letBindFV _ []     e = e
 letBindFV x (y:ys) e = Let y (Select (Var x) y) $ letBindFV x ys e
 
 
+-- Defunctionalization monad.
+newtype DefM a = DefM (ReaderT Env
+                       (StateT Int
+                        (Except String)) a)
+  deriving (Monad, Functor, Applicative,
+            MonadReader Env,
+            MonadState Int,
+            MonadError String)
 
-defunc :: Env -> Expr -> (Expr, StaticVal)
-defunc env expr = case expr of
-  Var x          -> case lookup x env of
-                      Just sv -> (expr, sv)
-                      Nothing -> error $ "variable " ++ x ++ " out of scope"
+runDefM :: DefM a -> Either String a
+runDefM (DefM m) = runExcept . flip evalStateT 0 $ runReaderT m emptyEnv
 
-  Num n          -> (Num n,    Dynamic)
-  TrueLit        -> (TrueLit,  Dynamic)
-  FalseLit       -> (FalseLit, Dynamic)
+lookupStaticVal :: Name -> DefM StaticVal
+lookupStaticVal x = do env <- ask
+                       case lookup x env of
+                         Just sv -> return sv
+                         Nothing -> throwError $ "variable " ++ x ++ " is out of scope"
 
-  Add e1 e2      -> case defunc env e1 of
-                      (e1', Dynamic) -> case defunc env e2 of
-                                          (e2', Dynamic) -> (Add e1' e2', Dynamic)
-                      _ -> error "addition of static expressions"
+freshVar :: Name -> DefM Name
+freshVar x = do s <- get
+                put (s+1)
+                return $ x ++ show s
+
+
+defunc :: Expr -> DefM (Expr, StaticVal)
+defunc expr = case expr of
+  Var x          -> do sv <- lookupStaticVal x
+                       return (expr, sv)
+  Num n          -> return (expr, Dynamic)
+  TrueLit        -> return (expr, Dynamic)
+  FalseLit       -> return (expr, Dynamic)
+
+  Add e1 e2      -> do (e1', sv1) <- defunc e1
+                       (e2', sv2) <- defunc e2
+                       unless (sv1 == Dynamic && sv2 == Dynamic)
+                         $ throwError "addition with static operand(s)"
+                       return (Add e1' e2', Dynamic)
 
   Lam x tp e0    -> let fv = freeVars expr
-                    in (Record $ map (\s -> (s, Var s)) fv, Lambda x tp e0 fv)
+                    in return (Record $ map (\s -> (s, Var s)) fv,
+                               Lambda x tp e0 fv)
 
-  App (Var f) e2 -> case lookup f env of
-                      Just (Lambda x tp e0 fv) ->
-                        case defunc env e2 of
-                          (e2', Dynamic) -> defunc env (letBindFV f fv (subst x e2' e0))
-                          _ -> error "application with static argument"
-                      Nothing -> error $ "variable " ++ f ++ " out of scope"
+  -- special case for variable application
+  App (Var f) e2 -> do sv1 <- lookupStaticVal f
+                       case sv1 of
+                         Lambda x tp e0 fv ->
+                           -- TODO: need to handle case for non-dynamic arg
+                           do (e2', Dynamic) <- defunc e2
+                              defunc (letBindFV f fv (subst x e2' e0))
+                         _ -> throwError "application of non-function"
 
-  App e1 e2      -> case defunc env e1 of
-                      (e1', Lambda x tp e0 fv) ->
-                        case defunc env e2 of
-                          (e2', Dynamic) ->
-                            defunc env $ Let "env" e1' (letBindFV "env" fv (subst x e2' e0))
-                      _ -> error $ "applied non-function: " ++ show e1
+  App e1 e2      -> do (e1', Lambda x tp e0 fv) <- defunc e1
+                       (e2', Dynamic)           <- defunc e2
+                       -- generate fresh variable for binding the closure of e1
+                       y <- freshVar "env"
+                       defunc $ Let y e1' (letBindFV y fv (subst x e2' e0))
 
-  Let x e1 e2    -> let (e1', sv1) = defunc env e1
-                        (e2', sv)  = defunc ((x, sv1) : env) e2
-                    in (Let x e1' e2', sv)
+  Let x e1 e2    -> do (e1', sv1) <- defunc e1
+                       (e2', sv)  <- local (extendEnv x sv1) (defunc e2)
+                       return (Let x e1' e2', sv)
 
-  Pair e1 e2     -> let (e1', sv1) = defunc env e1
-                        (e2', sv2) = defunc env e2
-                    in (Pair e1' e2', Tuple sv1 sv2)
+  Pair e1 e2     -> do (e1', sv1) <- defunc e1
+                       (e2', sv2) <- defunc e2
+                       return (Pair e1' e2', Tuple sv1 sv2)
 
-  Fst e0         -> case defunc env e0 of
-                      (e0', Tuple sv1 _) -> (Fst e0', sv1)
-                      (e0', Dynamic)     -> (Fst e0', Dynamic)
-                      _ -> error $ "projection of an expression that is neither "
-                                ++ "dynamic nor a statically known pair"
+  Fst e0         -> do (e0', sv0) <- defunc e0
+                       case sv0 of
+                         Tuple sv1 _ -> return (Fst e0', sv1)
+                         Dynamic     -> return (Fst e0', sv0)
+                         _ -> error $ "projection of an expression that is neither "
+                                   ++ "dynamic nor a statically known pair"
 
-  Snd e0         -> case defunc env e0 of
-                      (e0', Tuple _ sv2) -> (Snd e0', sv2)
-                      (e0', Dynamic)     -> (Snd e0', Dynamic)
-                      _ -> error $ "projection of an expression that is neither "
-                                ++ "dynamic nor a statically known pair"
+  Snd e0         -> do (e0', sv0) <- defunc e0
+                       case sv0 of
+                         Tuple _ sv2 -> return (Fst e0', sv2)
+                         Dynamic     -> return (Fst e0', sv0)
+                         _ -> error $ "projection of an expression that is neither "
+                                   ++ "dynamic nor a statically known pair"
 
-  Select e0 l    -> (Select e0 l, Dynamic)
-  --Select e0 l    -> case defunc env e0 of
-  --                    (e0', Dynamic) -> (e0', Dynamic)
-  --                    e -> error $ "not handled in select: " ++ show e
+  Select e0 l    -> return (expr, Dynamic)
+  -- Select e0 l    -> do (e0', sv0) <- defunc e0
+  --                      case sv0 of
+  --                        Dynamic -> return (expr, Dynamic)
+  --                        Rcd svs -> case lookup l svs of
+  --                          Just sv -> return (Select e0' l, sv)
+  --                          Nothing -> error "invalid record projection2"
+  --                        _ -> error $ "case for select: " ++ show sv0
 
-  Record xs      -> let f (x, e) =
-                          case defunc env e of
-                            (e', Dynamic) -> (x, e')
-                            _ -> error "static expression in record"
-                    in (Record $ map f xs, Dynamic)
-
+  Record ls      -> do ls'' <- mapM (\(x,e) -> do (e', sv) <- defunc e
+                                                  return ((x, e'), (x, sv))
+                                    ) ls
+                       let (ls', svs) = unzip ls''
+                       return (Record ls', Rcd svs)
 
   _ -> error $ "missing case for: " ++ show expr
+
+
+defuncStr s = case parseString s of
+  Left err   -> print err
+  Right expr -> print . runDefM $ defunc expr
 
 
 -- Simple haskeline REPL
@@ -150,7 +195,7 @@ process s = case parseString s of
       Left tpErr -> putStrLn $ "Type error: " ++ show tpErr
       Right tp   -> do
         putStrLn $ "Type:\n\t"   ++ show tp
-        putStrLn $ "Result:\n\t" ++ show (defunc emptyEnv expr)
+        putStrLn $ "Result:\n\t" ++ (show . runDefM $ defunc expr)
 
 main :: IO ()
 main = runInputT defaultSettings loop
@@ -160,3 +205,24 @@ main = runInputT defaultSettings loop
             Nothing -> return ()
             Just "" -> loop
             Just s  -> liftIO (process s) >> loop
+
+-- -- Examples.
+-- ex1 = process "(\\f:int->int. \\x:int. f (f x)) (\\y:int. y + y)"
+--
+-- ex2 = process "(\\f:(int->int)->(int->int). f) (\\g:int->int. g) (\\h:int. h)"
+--
+-- ex3 = process $ unlines [ "let comp = (\\f:int->int. \\g:int->int. \\x:int. f (g x))"
+--                         , "in comp (\\y:int. if y <= 10 then y+y else y+1)"
+--                         , "        (\\z:int. z+z)"
+--                         ]
+--
+-- ex4 = process $ unlines [ "\\b:bool. \\m:int. \\n:int."
+--                         , "  let f = \\g:int->int. \\x:int. if b then g x else g (g x) in"
+--                         , "  let h = \\y:int. y + y in"
+--                         , "  let k = \\z:int. z + 1"
+--                         , "  in f h m + f h n + f k m + f k n"
+--                         ]
+--
+-- ex5 = process $ unlines [ "\\x:int. let f = \\g:(int->int)->int. g (\\y:int. y+y)"
+--                         , "         in f (\\h:int->int. h x) + f (\\h:int->int. h (h x))"
+--                         ]
