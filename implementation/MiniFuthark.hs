@@ -66,16 +66,27 @@ extendEnv x sv env = (x, sv) : env
 freeVars :: Expr -> [Name]
 freeVars = Set.elems . fvSet
   where fvSet expr = case expr of
-          Var x       -> Set.singleton x
-          Num _       -> Set.empty
-          TrueLit     -> Set.empty
-          FalseLit    -> Set.empty
-          Add e1 e2   -> fvSet e1 `Set.union` fvSet e2
-          LEq e1 e2   -> fvSet e1 `Set.union` fvSet e2
-          Lam x tp e0 -> Set.delete x (fvSet e0)
-          App e1 e2   -> fvSet e1 `Set.union` fvSet e2
-          Let x e1 e2 -> fvSet e1 `Set.union` Set.delete x (fvSet e2)
-          -- todo: finish
+          Var x             -> Set.singleton x
+          Num _             -> Set.empty
+          TrueLit           -> Set.empty
+          FalseLit          -> Set.empty
+          Add e1 e2         -> fvSet e1 `Set.union` fvSet e2
+          LEq e1 e2         -> fvSet e1 `Set.union` fvSet e2
+          If e1 e2 e3       -> fvSet e1 `Set.union` fvSet e2 `Set.union` fvSet e3
+          Lam x tp e0       -> Set.delete x (fvSet e0)
+          App e1 e2         -> fvSet e1 `Set.union` fvSet e2
+          Let x e1 e2       -> fvSet e1 `Set.union` Set.delete x (fvSet e2)
+          Pair e1 e2        -> fvSet e1 `Set.union` fvSet e2
+          Fst e0            -> fvSet e0
+          Snd e0            -> fvSet e0
+          Record ls         -> Set.unions $ map (\(_, e) -> fvSet e) ls
+          Select e0 x       -> fvSet e0
+          ArrayLit es       -> Set.unions $ map fvSet es
+          Index e0 e1       -> fvSet e0 `Set.union` fvSet e1
+          Update e0 e1 e2   -> fvSet e0 `Set.union` fvSet e1 `Set.union` fvSet e2
+          Length e0         -> fvSet e0
+          Loop x e1 y e2 e3 -> fvSet e1 `Set.union` fvSet e2
+                                        `Set.union` (Set.delete x $ Set.delete y $ fvSet e3)
 
 -- Generates a nested sequence of let-bindings, binding the free
 -- variables to the corresponding fields in a record.
@@ -100,7 +111,8 @@ lookupStaticVal :: Name -> DefM StaticVal
 lookupStaticVal x = do env <- ask
                        case lookup x env of
                          Just sv -> return sv
-                         Nothing -> throwError $ "variable " ++ x ++ " is out of scope"
+                         Nothing -> -- throwError $ "variable " ++ x ++ " is out of scope"
+                                    return Dynamic
 
 freshVar :: Name -> DefM Name
 freshVar x = do s <- get
@@ -126,20 +138,42 @@ defunc expr = case expr of
                     in return (Record $ map (\s -> (s, Var s)) fv,
                                Lambda x tp e0 fv)
 
-  -- special case for variable application
+  -- Handle special case of variable application to reduce the number of
+  -- unnecessary let-bindings being created.
   App (Var f) e2 -> do sv1 <- lookupStaticVal f
                        case sv1 of
                          Lambda x tp e0 fv ->
-                           -- TODO: need to handle case for non-dynamic arg
-                           do (e2', Dynamic) <- defunc e2
-                              defunc (letBindFV f fv (subst x e2' e0))
-                         _ -> throwError "application of non-function"
+                           do (e2', sv2) <- defunc e2
+                              (e0', sv)  <- local (extendEnv x sv2) (defunc e0)
+                              return (letBindFV f fv (Let x e2' e0'), sv)
+                         _ -> error "applied variable is not a function"
 
   App e1 e2      -> do (e1', Lambda x tp e0 fv) <- defunc e1
-                       (e2', Dynamic)           <- defunc e2
-                       -- generate fresh variable for binding the closure of e1
+                       (e2', sv2) <- defunc e2
+                       (e0', sv) <- local (extendEnv x sv2) (defunc e0)
                        y <- freshVar "env"
-                       defunc $ Let y e1' (letBindFV y fv (subst x e2' e0))
+                       return (Let y e1' (letBindFV y fv (Let x e2' e0')), sv)
+
+  -- special case for variable application
+  --App (Var f) e2 -> do sv1 <- lookupStaticVal f
+  --                     case sv1 of
+  --                       Lambda x tp e0 fv ->
+  --                         -- TODO: need to handle case for non-dynamic arg
+  --                         do (e2', sv2) <- defunc e2
+  --                            case sv2 of
+  --                              Dynamic  -> defunc (letBindFV f fv (subst x e2' e0))
+  --                              Lambda{} -> do y <- freshVar "env"
+  --                                             defunc $ letBindFV f fv (Let y e2' (subst x e2' e0))
+  --                            --(e', sv) <- defunc $ subst x e2' e0
+  --                            --return (letBindFV f fv e', sv)
+
+  --                       _ -> throwError "application of non-function"
+
+  --App e1 e2      -> do (e1', Lambda x tp e0 fv) <- defunc e1
+  --                     (e2', Dynamic)           <- defunc e2
+  --                     -- generate fresh variable for binding the closure of e1
+  --                     y <- freshVar "env"
+  --                     defunc $ Let y e1' (letBindFV y fv (subst x e2' e0))
 
   Let x e1 e2    -> do (e1', sv1) <- defunc e1
                        (e2', sv)  <- local (extendEnv x sv1) (defunc e2)
@@ -181,9 +215,14 @@ defunc expr = case expr of
   _ -> error $ "missing case for: " ++ show expr
 
 
+-- Skips type checking. Convenient for testing.
+defuncStr :: String -> IO ()
 defuncStr s = case parseString s of
-  Left err   -> print err
-  Right expr -> print . runDefM $ defunc expr
+  Left parseErr -> print parseErr
+  Right expr    ->
+    case runDefM $ defunc expr of
+      Left defErr      -> print defErr
+      Right (expr, sv) -> print $ pretty expr
 
 
 -- Simple haskeline REPL
@@ -194,8 +233,13 @@ process s = case parseString s of
     case typeOf emptyCtx expr of
       Left tpErr -> putStrLn $ "Type error: " ++ show tpErr
       Right tp   -> do
-        putStrLn $ "Type:\n\t"   ++ show tp
-        putStrLn $ "Result:\n\t" ++ (show . runDefM $ defunc expr)
+        putStrLn $ "Type: " ++ show tp
+        case runDefM $ defunc expr of
+          Left defErr -> putStrLn $ "Defunctionalization error: " ++ show defErr
+          Right (expr, sv) -> do
+            putStrLn $ "Top-level static value:\t" ++ show sv ++ "\n"
+            putStrLn $ "Result program:\n"
+            putStrLn . show $ pretty expr
 
 main :: IO ()
 main = runInputT defaultSettings loop
@@ -205,24 +249,3 @@ main = runInputT defaultSettings loop
             Nothing -> return ()
             Just "" -> loop
             Just s  -> liftIO (process s) >> loop
-
--- -- Examples.
--- ex1 = process "(\\f:int->int. \\x:int. f (f x)) (\\y:int. y + y)"
---
--- ex2 = process "(\\f:(int->int)->(int->int). f) (\\g:int->int. g) (\\h:int. h)"
---
--- ex3 = process $ unlines [ "let comp = (\\f:int->int. \\g:int->int. \\x:int. f (g x))"
---                         , "in comp (\\y:int. if y <= 10 then y+y else y+1)"
---                         , "        (\\z:int. z+z)"
---                         ]
---
--- ex4 = process $ unlines [ "\\b:bool. \\m:int. \\n:int."
---                         , "  let f = \\g:int->int. \\x:int. if b then g x else g (g x) in"
---                         , "  let h = \\y:int. y + y in"
---                         , "  let k = \\z:int. z + 1"
---                         , "  in f h m + f h n + f k m + f k n"
---                         ]
---
--- ex5 = process $ unlines [ "\\x:int. let f = \\g:(int->int)->int. g (\\y:int. y+y)"
---                         , "         in f (\\h:int->int. h x) + f (\\h:int->int. h (h x))"
---                         ]
