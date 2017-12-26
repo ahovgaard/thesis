@@ -50,6 +50,7 @@ data StaticVal = Dynamic
                | Lambda Name Tp Expr [Name]
                | Tuple StaticVal StaticVal
                | Rcd [(Name, StaticVal)]
+               | DynamicFun StaticVal
   deriving (Show, Eq)
 
 type Env = [(Name, StaticVal)]
@@ -136,44 +137,26 @@ defunc expr = case expr of
                     in return (Record $ map (\s -> (s, Var s)) fv,
                                Lambda x tp e0 fv)
 
-  -- Handle special case of variable application to reduce the number of
-  -- unnecessary let-bindings being created.
-  App (Var f) e2 -> do sv1 <- lookupStaticVal f
-                       case sv1 of
-                         Lambda x _ e0 fv ->
-                           do (e2', sv2) <- defunc e2
-                              (e0', sv)  <- local (extendEnv x sv2) (defunc e0)
-                              return (letBindFV f fv (Let x e2' e0'), sv)
-                         _ -> error "applied variable is not a function"
-
-  App e1 e2      -> do (e1', Lambda x _ e0 fv) <- defunc e1
+  App e1 e2      -> do (e1', sv1) <- defunc e1
                        (e2', sv2) <- defunc e2
-                       (e0', sv) <- local (extendEnv x sv2) (defunc e0)
-                       y <- freshVar "env"
-                       return (Let y e1' (letBindFV y fv (Let x e2' e0')), sv)
+                       case sv1 of
+                         Lambda x _ e0 fv -> do
+                           (e0', sv) <- local (extendEnv x sv2) (defunc e0)
+                           -- generate fresh variable for binding the closure of e1
+                           y <- freshVar "env"
+                           return (Let y e1' (letBindFV y fv (Let x e2' e0')), sv)
 
-  -- special case for variable application
-  --App (Var f) e2 -> do sv1 <- lookupStaticVal f
-  --                     case sv1 of
-  --                       Lambda x tp e0 fv ->
-  --                         -- TODO: need to handle case for non-dynamic arg
-  --                         do (e2', sv2) <- defunc e2
-  --                            case sv2 of
-  --                              Dynamic  -> defunc (letBindFV f fv (subst x e2' e0))
-  --                              Lambda{} -> do y <- freshVar "env"
-  --                                             defunc $ letBindFV f fv (Let y e2' (subst x e2' e0))
-  --                            --(e', sv) <- defunc $ subst x e2' e0
-  --                            --return (letBindFV f fv e', sv)
+                         DynamicFun sv ->
+                           case sv2 of Dynamic -> return (App e1' e2', sv)
+                                       _ -> error $ "expected dynamic argument to "
+                                                 ++ "let-bound first-order function, "
+                                                 ++ "but received a " ++ show sv2
 
-  --                       _ -> throwError "application of non-function"
+                         _ -> error $ "application of an expression that is neither a "
+                                   ++ "static lambda nor a dynamic functions, but a "
+                                   ++ show sv1
 
-  --App e1 e2      -> do (e1', Lambda x tp e0 fv) <- defunc e1
-  --                     (e2', Dynamic)           <- defunc e2
-  --                     -- generate fresh variable for binding the closure of e1
-  --                     y <- freshVar "env"
-  --                     defunc $ Let y e1' (letBindFV y fv (subst x e2' e0))
-
-  Let x e1 e2    -> do (e1', sv1) <- defunc e1
+  Let x e1 e2    -> do (e1', sv1) <- defuncLet e1
                        (e2', sv)  <- local (extendEnv x sv1) (defunc e2)
                        return (Let x e1' e2', sv)
 
@@ -211,6 +194,14 @@ defunc expr = case expr of
                        return (Record ls', Rcd svs)
 
   _ -> error $ "missing case for: " ++ show expr
+
+
+-- Keep let-bound first-order lambdas intact.
+defuncLet :: Expr -> DefM (Expr, StaticVal)
+defuncLet (Lam x tp e0)
+  | order tp == 0 = do (e0', sv0) <- local (extendEnv x Dynamic) (defuncLet e0)
+                       return (Lam x tp e0', DynamicFun sv0)
+defuncLet expr    = defunc expr
 
 
 -- Skips type checking. Convenient for testing.

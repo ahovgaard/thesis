@@ -1,6 +1,7 @@
 module Syntax ( Name
               , Tp(..)
               , Expr(..)
+              , order
               , pretty
               ) where
 
@@ -40,6 +41,14 @@ data Expr = Var Name
           | Length Expr
           | Loop Name Expr Name Expr Expr
   deriving (Show, Eq)
+
+-- Order of a type.
+order :: Tp -> Int
+order TpInt             = 0
+order TpBool            = 0
+order (TpArrow tp1 tp2) = max (order tp1 + 1) (order tp2)
+order (TpPair  tp1 tp2) = max (order tp1) (order tp2)
+order (TpArray tp)      = order tp
 
 -- Pretty printing of expression and types.
 instance Pretty Expr where

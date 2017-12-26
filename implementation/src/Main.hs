@@ -16,7 +16,7 @@ process s = case parseString s of
     case typeOf emptyCtx e of
       Left tpErr -> putStrLn $ "Type error: " ++ show tpErr
       Right tp   -> do
-        putStrLn $ "Type: " ++ show tp
+        putStrLn $ "Type: " ++ show (pretty tp)
         case runDefM $ defunc e of
           Left defErr -> putStrLn $ "Defunctionalization error: " ++ show defErr
           Right (e', sv) -> do

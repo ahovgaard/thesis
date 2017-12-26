@@ -29,13 +29,6 @@ lookupVar ctx x = case lookup x ctx of
                     Just tp -> return tp
                     Nothing -> Left $ UndefinedVariableError x
 
-order :: Tp -> Int
-order TpInt             = 0
-order TpBool            = 0
-order (TpArrow tp1 tp2) = max (order tp1 + 1) (order tp2)
-order (TpPair  tp1 tp2) = max (order tp1) (order tp2)
-order (TpArray tp)      = order tp
-
 checkMatch :: Tp -> Tp -> Either TypeError ()
 checkMatch tp1 tp2 = when (tp1 /= tp2) $ Left (TypeMismatchError tp1 tp2)
 
