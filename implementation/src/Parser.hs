@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -fno-warn-missing-signatures #-}
+
 module Parser (parseString) where
 
 import Text.Parsec
@@ -79,11 +81,9 @@ parseIf = If <$> (reserved "if"   *> parseExpr)
 
 parseLambda :: Parser Expr
 parseLambda = do reservedOp "\\"
-                 x <- identifier
-                 colon
-                 tp <- parseType
-                 dot
-                 e <- parseExpr
+                 x  <- identifier <* colon
+                 tp <- parseType  <* dot
+                 e  <- parseExpr
                  return $ Lam x tp e
 
 parseLet :: Parser Expr

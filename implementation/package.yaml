@@ -1,0 +1,23 @@
+name:         ho-futhark
+version:      0.1.0
+github:       ahovgaard/thesis
+author:       Anders Kiel Hovgaard
+
+ghc-options:  -Wall
+
+dependencies:
+- base >= 4.7 && < 5
+- containers >= 0.5
+- wl-pprint
+- mtl >= 2.2
+- parsec >= 3
+- haskeline
+
+library:
+  source-dirs: src
+
+executables:
+  defunc:
+    main: src/Main.hs
+    dependencies:
+    - ho-futhark

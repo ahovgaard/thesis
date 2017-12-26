@@ -75,9 +75,9 @@ pprExpr d e = case e of
   Snd e0            -> parensIf (d > 0) $ text "snd" <+> pprExpr (d+1) e0
 
   Record ls         -> encloseSep lbrace rbrace (comma <> space) (map pprField ls)
-    where pprField (x, e) = text x <+> equals <+> pprExpr d e
+    where pprField (x, e') = text x <+> equals <+> pprExpr d e'
 
-  Select e l        -> pprExpr (d+1) e <> dot <> text l
+  Select e0 l       -> pprExpr (d+1) e0 <> dot <> text l
 
   ArrayLit es       -> parensIf (d > 0) $ list $ map (pprExpr d) es
   Index e0 e1       -> pprExpr (d+1) e0 <> brackets (pprExpr d e1)
@@ -96,7 +96,7 @@ pprType d tp = case tp of
   TpArrow tp1 tp2 -> parensIf (d > 0)
                        $ pprType (d+1) tp1 <+> text "->" <+> pprType d tp2
   TpPair tp1 tp2  -> parens $ pprType d tp1 <> text ", " <> pprType d tp2
-  TpArray tp      -> text "[]" <> pprType d tp
+  TpArray tp0     -> text "[]" <> pprType d tp0
 
 -- Enclose document in parenthesis if condition holds.
 parensIf :: Bool -> Doc -> Doc

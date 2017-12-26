@@ -1,20 +1,14 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-
-module MiniFuthark where
+module Defunc where
 
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
 import Control.Monad.State
-import Control.Monad.Trans
-import Data.Set (Set)
 import qualified Data.Set as Set
-import System.Console.Haskeline
 
-import Syntax
 import Parser
-import TypeChecker
-
+import Syntax
 
 -- Substitutes s for x in t.
 -- Assumes that variables are unique for now.
@@ -39,6 +33,10 @@ subst x s t = case t of
   Pair e1 e2           -> Pair (subst x s e1) (subst x s e2)
   Fst e0               -> Fst (subst x s e0)
   Snd e0               -> Snd (subst x s e0)
+
+  Record _             -> undefined
+  Select _ _           -> undefined
+
   ArrayLit es          -> ArrayLit $ map (subst x s) es
   Index e0 e1          -> Index (subst x s e0) (subst x s e1)
   Update e0 e1 e2      -> Update (subst x s e0) (subst x s e1) (subst x s e2)
@@ -73,14 +71,14 @@ freeVars = Set.elems . fvSet
           Add e1 e2         -> fvSet e1 `Set.union` fvSet e2
           LEq e1 e2         -> fvSet e1 `Set.union` fvSet e2
           If e1 e2 e3       -> fvSet e1 `Set.union` fvSet e2 `Set.union` fvSet e3
-          Lam x tp e0       -> Set.delete x (fvSet e0)
+          Lam x _ e0        -> Set.delete x (fvSet e0)
           App e1 e2         -> fvSet e1 `Set.union` fvSet e2
           Let x e1 e2       -> fvSet e1 `Set.union` Set.delete x (fvSet e2)
           Pair e1 e2        -> fvSet e1 `Set.union` fvSet e2
           Fst e0            -> fvSet e0
           Snd e0            -> fvSet e0
           Record ls         -> Set.unions $ map (\(_, e) -> fvSet e) ls
-          Select e0 x       -> fvSet e0
+          Select e0 _       -> fvSet e0
           ArrayLit es       -> Set.unions $ map fvSet es
           Index e0 e1       -> fvSet e0 `Set.union` fvSet e1
           Update e0 e1 e2   -> fvSet e0 `Set.union` fvSet e1 `Set.union` fvSet e2
@@ -124,7 +122,7 @@ defunc :: Expr -> DefM (Expr, StaticVal)
 defunc expr = case expr of
   Var x          -> do sv <- lookupStaticVal x
                        return (expr, sv)
-  Num n          -> return (expr, Dynamic)
+  Num _          -> return (expr, Dynamic)
   TrueLit        -> return (expr, Dynamic)
   FalseLit       -> return (expr, Dynamic)
 
@@ -142,13 +140,13 @@ defunc expr = case expr of
   -- unnecessary let-bindings being created.
   App (Var f) e2 -> do sv1 <- lookupStaticVal f
                        case sv1 of
-                         Lambda x tp e0 fv ->
+                         Lambda x _ e0 fv ->
                            do (e2', sv2) <- defunc e2
                               (e0', sv)  <- local (extendEnv x sv2) (defunc e0)
                               return (letBindFV f fv (Let x e2' e0'), sv)
                          _ -> error "applied variable is not a function"
 
-  App e1 e2      -> do (e1', Lambda x tp e0 fv) <- defunc e1
+  App e1 e2      -> do (e1', Lambda x _ e0 fv) <- defunc e1
                        (e2', sv2) <- defunc e2
                        (e0', sv) <- local (extendEnv x sv2) (defunc e0)
                        y <- freshVar "env"
@@ -197,7 +195,7 @@ defunc expr = case expr of
                          _ -> error $ "projection of an expression that is neither "
                                    ++ "dynamic nor a statically known pair"
 
-  Select e0 l    -> return (expr, Dynamic)
+  Select _ _     -> return (expr, Dynamic)
   -- Select e0 l    -> do (e0', sv0) <- defunc e0
   --                      case sv0 of
   --                        Dynamic -> return (expr, Dynamic)
@@ -219,33 +217,7 @@ defunc expr = case expr of
 defuncStr :: String -> IO ()
 defuncStr s = case parseString s of
   Left parseErr -> print parseErr
-  Right expr    ->
-    case runDefM $ defunc expr of
-      Left defErr      -> print defErr
-      Right (expr, sv) -> print $ pretty expr
-
-
--- Simple haskeline REPL
-process :: String -> IO ()
-process s = case parseString s of
-  Left  err  -> putStrLn "Parse error:" >> print err
-  Right expr ->
-    case typeOf emptyCtx expr of
-      Left tpErr -> putStrLn $ "Type error: " ++ show tpErr
-      Right tp   -> do
-        putStrLn $ "Type: " ++ show tp
-        case runDefM $ defunc expr of
-          Left defErr -> putStrLn $ "Defunctionalization error: " ++ show defErr
-          Right (expr, sv) -> do
-            putStrLn $ "Top-level static value:\t" ++ show sv ++ "\n"
-            putStrLn $ "Result program:\n"
-            putStrLn . show $ pretty expr
-
-main :: IO ()
-main = runInputT defaultSettings loop
-  where loop = do
-          input <- getInputLine "> "
-          case input of
-            Nothing -> return ()
-            Just "" -> loop
-            Just s  -> liftIO (process s) >> loop
+  Right e       ->
+    case runDefM $ defunc e of
+      Left defErr   -> print defErr
+      Right (e', _) -> print $ pretty e'

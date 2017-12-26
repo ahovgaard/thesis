@@ -97,6 +97,10 @@ typeOf ctx expr = case expr of
                             TpPair _ tp2 -> return tp2
                             _            -> Left $ TypeError "product type expected"
 
+  Record _          -> undefined
+
+  Select _ _        -> undefined
+
   ArrayLit es       -> do tps <- mapM (typeOf ctx) es
                           case tps of
                             [] -> Left $ TypeError "unknown type of empty array"
