@@ -47,7 +47,7 @@ subst x s t = case t of
 
 
 data StaticVal = Dynamic
-               | Lambda Name Tp Expr [Name]
+               | Lambda Name Tp Expr [(Name, StaticVal)]
                | Tuple StaticVal StaticVal
                | Rcd [(Name, StaticVal)]
                | DynamicFun StaticVal
@@ -60,6 +60,9 @@ emptyEnv = []
 
 extendEnv :: Name -> StaticVal -> Env -> Env
 extendEnv x sv env = (x, sv) : env
+
+extendEnvList :: [(Name, StaticVal)] -> Env -> Env
+extendEnvList = (++)
 
 -- Computes the free variables of an expression in deterministic order.
 freeVars :: Expr -> [Name]
@@ -110,8 +113,7 @@ lookupStaticVal :: Name -> DefM StaticVal
 lookupStaticVal x = do env <- ask
                        case lookup x env of
                          Just sv -> return sv
-                         Nothing -> -- throwError $ "variable " ++ x ++ " is out of scope"
-                                    return Dynamic
+                         Nothing -> throwError $ "variable " ++ x ++ " is out of scope"
 
 freshVar :: Name -> DefM Name
 freshVar x = do s <- get
@@ -133,18 +135,34 @@ defunc expr = case expr of
                          $ throwError "addition with static operand(s)"
                        return (Add e1' e2', Dynamic)
 
-  Lam x tp e0    -> let fv = freeVars expr
-                    in return (Record $ map (\s -> (s, Var s)) fv,
-                               Lambda x tp e0 fv)
+  LEq e1 e2      -> do (e1', sv1) <- defunc e1
+                       (e2', sv2) <- defunc e2
+                       unless (sv1 == Dynamic && sv2 == Dynamic)
+                         $ throwError "less-than or equal with static operand(s)"
+                       return (LEq e1' e2', Dynamic)
+
+  If e1 e2 e3    -> do (e1', sv1) <- defunc e1
+                       (e2', sv2) <- defunc e2
+                       (e3', sv3) <- defunc e3
+                       unless (sv1 == Dynamic && sv2 == Dynamic && sv3 == Dynamic)
+                         $ throwError "conditional with static operand(s)"
+                       return (If e1' e2' e3', Dynamic)
+
+  Lam x tp e0    -> do let fv  = freeVars expr
+                       svs <- mapM lookupStaticVal fv
+                       return (Record $ map (\s -> (s, Var s)) fv,
+                               Lambda x tp e0 (zip fv svs))
 
   App e1 e2      -> do (e1', sv1) <- defunc e1
                        (e2', sv2) <- defunc e2
                        case sv1 of
                          Lambda x _ e0 fv -> do
-                           (e0', sv) <- local (extendEnv x sv2) (defunc e0)
+                           (e0', sv) <- local (extendEnv x sv2 . extendEnvList fv)
+                                              (defunc e0)
                            -- generate fresh variable for binding the closure of e1
                            y <- freshVar "env"
-                           return (Let y e1' (letBindFV y fv (Let x e2' e0')), sv)
+                           return (Let y e1' (letBindFV y (map fst fv)
+                                               (Let x e2' e0')), sv)
 
                          DynamicFun sv ->
                            case sv2 of Dynamic -> return (App e1' e2', sv)
@@ -178,14 +196,13 @@ defunc expr = case expr of
                          _ -> error $ "projection of an expression that is neither "
                                    ++ "dynamic nor a statically known pair"
 
-  Select _ _     -> return (expr, Dynamic)
-  -- Select e0 l    -> do (e0', sv0) <- defunc e0
-  --                      case sv0 of
-  --                        Dynamic -> return (expr, Dynamic)
-  --                        Rcd svs -> case lookup l svs of
-  --                          Just sv -> return (Select e0' l, sv)
-  --                          Nothing -> error "invalid record projection2"
-  --                        _ -> error $ "case for select: " ++ show sv0
+  Select e0 l    -> do (e0', sv0) <- defunc e0
+                       case sv0 of
+                         Dynamic -> return (expr, Dynamic)
+                         Rcd svs -> case lookup l svs of
+                           Just sv -> return (Select e0' l, sv)
+                           Nothing -> error "invalid record projection2"
+                         _ -> error $ "case for select: " ++ show sv0
 
   Record ls      -> do ls'' <- mapM (\(x,e) -> do (e', sv) <- defunc e
                                                   return ((x, e'), (x, sv))
