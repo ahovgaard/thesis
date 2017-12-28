@@ -66,7 +66,7 @@ parseExpr1 =  parseBool
           <|> parseArray
           <|> parseLength
           <|> parseLoop
-          <|> Num <$> fromIntegral <$> integer
+          <|> Num . fromIntegral <$> integer
           <|> Var <$> identifier
           <|> parseParens
 

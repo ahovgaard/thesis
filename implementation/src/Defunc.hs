@@ -50,7 +50,7 @@ data StaticVal = Dynamic
                | Lambda Name Tp Expr [(Name, StaticVal)]
                | Tuple StaticVal StaticVal
                | Rcd [(Name, StaticVal)]
-               | DynamicFun StaticVal
+               | DynamicFun (Expr, StaticVal) StaticVal
   deriving (Show, Eq)
 
 type Env = [(Name, StaticVal)]
@@ -88,7 +88,7 @@ freeVars = Set.elems . fvSet
           Update e0 e1 e2   -> fvSet e0 `Set.union` fvSet e1 `Set.union` fvSet e2
           Length e0         -> fvSet e0
           Loop x e1 y e2 e3 -> fvSet e1 `Set.union` fvSet e2
-                                        `Set.union` (Set.delete x $ Set.delete y $ fvSet e3)
+                                        `Set.union` Set.delete x (Set.delete y $ fvSet e3)
 
 -- Generates a nested sequence of let-bindings, binding the free
 -- variables to the corresponding fields in a record.
@@ -120,11 +120,13 @@ freshVar x = do s <- get
                 put (s+1)
                 return $ x ++ show s
 
-
 defunc :: Expr -> DefM (Expr, StaticVal)
 defunc expr = case expr of
   Var x          -> do sv <- lookupStaticVal x
-                       return (expr, sv)
+                       case sv of
+                         DynamicFun clsr _ -> return clsr
+                         _                 -> return (expr, sv)
+
   Num _          -> return (expr, Dynamic)
   TrueLit        -> return (expr, Dynamic)
   FalseLit       -> return (expr, Dynamic)
@@ -149,11 +151,11 @@ defunc expr = case expr of
                        return (If e1' e2' e3', Dynamic)
 
   Lam x tp e0    -> do let fv  = freeVars expr
-                       svs <- mapM lookupStaticVal fv
-                       return (Record $ map (\s -> (s, Var s)) fv,
+                       (envVals, svs) <- unzip <$> mapM (defunc . Var) fv
+                       return (Record (zip fv envVals),
                                Lambda x tp e0 (zip fv svs))
 
-  App e1 e2      -> do (e1', sv1) <- defunc e1
+  App e1 e2      -> do (e1', sv1) <- defuncDynFunVar e1
                        (e2', sv2) <- defunc e2
                        case sv1 of
                          Lambda x _ e0 fv -> do
@@ -164,7 +166,7 @@ defunc expr = case expr of
                            return (Let y e1' (letBindFV y (map fst fv)
                                                (Let x e2' e0')), sv)
 
-                         DynamicFun sv ->
+                         DynamicFun _ sv ->
                            case sv2 of Dynamic -> return (App e1' e2', sv)
                                        _ -> error $ "expected dynamic argument to "
                                                  ++ "let-bound first-order function, "
@@ -215,11 +217,19 @@ defunc expr = case expr of
 
 -- Keep let-bound first-order lambdas intact.
 defuncLet :: Expr -> DefM (Expr, StaticVal)
-defuncLet (Lam x tp e0)
+defuncLet expr@(Lam x tp e0)
   | order tp == 0 = do (e0', sv0) <- local (extendEnv x Dynamic) (defuncLet e0)
-                       return (Lam x tp e0', DynamicFun sv0)
+                       clsr <- defunc expr
+                       return (Lam x tp e0', DynamicFun clsr sv0)
 defuncLet expr    = defunc expr
 
+-- Avoid translating a dynamic function variable into its static
+-- closure. Used in the case for application.
+defuncDynFunVar :: Expr -> DefM (Expr, StaticVal)
+defuncDynFunVar expr = case expr of
+                         Var x -> do sv <- lookupStaticVal x
+                                     return (expr, sv)
+                         _     -> defunc expr
 
 -- Skips type checking. Convenient for testing.
 defuncStr :: String -> IO ()
