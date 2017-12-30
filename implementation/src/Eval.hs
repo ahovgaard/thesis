@@ -13,11 +13,11 @@ eval expr = case expr of
 
   Add e1 e2         -> do Num n1 <- eval e1
                           Num n2 <- eval e2
-                          return $ Num (n1 + n2)
+                          Just $ Num (n1 + n2)
 
   LEq e1 e2         -> do Num n1 <- eval e1
                           Num n2 <- eval e2
-                          return $ if n1 <= n2 then TrueLit else FalseLit
+                          Just $ if n1 <= n2 then TrueLit else FalseLit
 
   If e1 e2 e3       -> do v1 <- eval e1
                           case v1 of
@@ -25,7 +25,7 @@ eval expr = case expr of
                             FalseLit -> eval e3
                             _        -> Nothing
 
-  Lam _ _ _         -> return expr
+  Lam{}             -> Just expr
 
   App e1 e2         -> do v1 <- eval e1
                           v2 <- eval e2
@@ -66,8 +66,8 @@ eval expr = case expr of
                           case v0 of
                             ArrayLit vs ->
                               case v1 of
-                                Num i | i < length vs -> Just $ vs !! i
-                                _                     -> Nothing
+                                Num i | 0 <= i && i < length vs -> Just $ vs !! i
+                                _                               -> Nothing
                             _           -> Nothing
 
   Update e0 e1 e2   -> do v0 <- eval e0
