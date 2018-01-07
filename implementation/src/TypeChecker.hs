@@ -90,9 +90,15 @@ typeOf ctx expr = case expr of
                             TpPair _ tp2 -> return tp2
                             _            -> Left $ TypeError "product type expected"
 
-  Record _          -> undefined
+  Record es         -> do tps <- mapM (typeOf ctx . snd) es
+                          return . TpRecord $ zip (map fst es) tps
 
-  Select _ _        -> undefined
+  Select e1 l       -> do tp1 <- typeOf ctx e1
+                          case tp1 of
+                            TpRecord ts -> case lookup l ts of
+                              Just tp -> Right tp
+                              Nothing -> Left $ TypeError "invalid record selection"
+                            _ -> Left $ TypeError "selection from non-record"
 
   ArrayLit es       -> do tps <- mapM (typeOf ctx) es
                           case tps of

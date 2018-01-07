@@ -40,20 +40,27 @@ runTest input =
     Right expr    ->
       case typeOf emptyCtx expr of
         Left typeErr -> error $ "type error: " ++ show typeErr
-        Right _      ->
-          case defuncExpr expr of
-            Left s      -> error $ "defunctionalization error" ++ s
-            Right expr' -> do putStrLn "Input program:\n"
-                              print $ pretty expr
-                              putStrLn "\nTransformed program:\n"
-                              print $ pretty expr'
-                              case (eval expr, eval expr') of
-                                (Just e, Just e')
-                                  | e == e' -> do putStr "\nEvaluates to the same value: "
-                                                  print $ pretty e
-                                                  return True
-                                _           -> do putStrLn "\nEvaluates to distinct values."
-                                                  return False
+        Right tp     ->
+          do let expr' = defuncExpr expr
+             putStrLn "Input program:\n"
+             print $ pretty expr
+             putStrLn "\nType:"
+             print $ pretty tp
+             putStrLn "\nTransformed program:\n"
+             print $ pretty expr'
+
+             putStrLn "\nType:"
+             case typeOf emptyCtx expr' of
+               Left typeErr -> putStrLn $ "type error: " ++ show typeErr
+               Right tp'    -> print $ pretty tp'
+
+             case (eval expr, eval expr') of
+               (Just e, Just e')
+                 | e == e' -> do putStr "\nEvaluates to the same value: "
+                                 print $ pretty e
+                                 return True
+               _           -> do putStrLn "\nEvaluates to distinct values."
+                                 return False
 
 main :: IO ()
 main = do ls <- mapM (\s -> runTest s <* line) tests

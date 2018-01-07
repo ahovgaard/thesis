@@ -17,12 +17,8 @@ process s = case parseString s of
       Left tpErr -> putStrLn $ "Type error: " ++ show tpErr
       Right tp   -> do
         putStrLn $ "Type: " ++ show (pretty tp)
-        case runDefM $ defunc e of
-          Left defErr -> putStrLn $ "Defunctionalization error: " ++ show defErr
-          Right (e', sv) -> do
-            putStrLn $ "Top-level static value:\t" ++ show sv ++ "\n"
-            putStrLn "Result program:\n"
-            print $ pretty e'
+        putStrLn "Result program:\n"
+        print . pretty . runDefM $ defunc e
 
 main :: IO ()
 main = runInputT defaultSettings loop
