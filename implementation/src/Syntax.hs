@@ -113,6 +113,7 @@ order TpBool            = 0
 order (TpArrow tp1 tp2) = max (order tp1 + 1) (order tp2)
 order (TpPair  tp1 tp2) = max (order tp1) (order tp2)
 order (TpArray tp)      = order tp
+order (TpRecord ls)     = maximum $ map (order . snd) ls
 
 -- Pretty printing of expression and types.
 instance Pretty Expr where
@@ -170,6 +171,8 @@ pprType d tp = case tp of
                        $ pprType (d+1) tp1 <+> text "->" <+> pprType d tp2
   TpPair tp1 tp2  -> parens $ pprType d tp1 <> text ", " <> pprType d tp2
   TpArray tp0     -> text "[]" <> pprType d tp0
+  TpRecord ls     -> encloseSep lbrace rbrace (comma <> space) (map pprField ls)
+    where pprField (x, t) = text x <+> equals <+> pprType d t
 
 -- Enclose document in parenthesis if condition holds.
 parensIf :: Bool -> Doc -> Doc
