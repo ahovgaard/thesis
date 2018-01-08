@@ -172,7 +172,7 @@ pprType d tp = case tp of
   TpPair tp1 tp2  -> parens $ pprType d tp1 <> text ", " <> pprType d tp2
   TpArray tp0     -> text "[]" <> pprType d tp0
   TpRecord ls     -> encloseSep lbrace rbrace (comma <> space) (map pprField ls)
-    where pprField (x, t) = text x <+> equals <+> pprType d t
+    where pprField (x, t) = text x <+> colon <+> pprType d t
 
 -- Enclose document in parenthesis if condition holds.
 parensIf :: Bool -> Doc -> Doc
