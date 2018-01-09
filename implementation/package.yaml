@@ -21,3 +21,11 @@ executables:
     main: src/Main.hs
     dependencies:
     - ho-futhark
+
+tests:
+  defunc-test:
+    main:                defunc-test.hs
+    source-dirs:         test
+    dependencies:
+    - split >= 0.2
+    - ho-futhark

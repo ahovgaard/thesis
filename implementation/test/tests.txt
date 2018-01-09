@@ -1,0 +1,31 @@
+let f = \x:int. x+x
+in f 1 + f 2
+
+
+let f = \x:int. let a = 1
+                 in \y:int. x+y+a
+in f 1 2 + f 3 4
+
+
+let f = let g = (let a = 1
+                 in \x:int. x+a)
+        in \y:int. g 2 + y
+in f 3
+
+
+let f = \x:int. x+x
+in let g = f
+   in g 5
+
+
+let f = let b = 2 in
+        let g = let a = 1 in
+                let h = \x:int. x+a
+                in \z:int. h b + z
+        in \y:int. g y + b
+in f 42
+
+
+let t = let y = 1
+        in (\z:int. y+z, 10)
+in (fst t) 5

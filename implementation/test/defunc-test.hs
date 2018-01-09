@@ -1,41 +1,11 @@
-module Test where
+import Data.Char
+import Data.List.Split
 
 import Defunc
 import Eval
 import Parser
 import Syntax
 import TypeChecker
-
-tests :: [String]
-tests = [
-    "let f = \\x:int. x+x \
-    \in f 1 + f 2"
-
-  , "let f = \\x:int. let a = 1 \
-    \                 in \\y:int. x+y+a \
-    \in f 1 2 + f 3 4"
-
-  , "let f = let g = (let a = 1 \
-    \                 in \\x:int. x+a) \
-    \        in \\y:int. g 2 + y \
-    \in f 3"
-
-  , "let f = \\x:int. x+x \
-    \in let g = f \
-    \   in g 5"
-
-  , "let f = let b = 2 in                  \
-    \        let g = let a = 1 in          \
-    \                let h = \\x:int. x+a  \
-    \                in \\z:int. h b + z   \
-    \        in \\y:int. g y + b           \
-    \in f 42"
-
-  , "let t = let y = 1               \
-    \        in (\\z:int. y+z, 10)   \
-    \in (fst t) 5"
-  ]
-
 
 -- Tests that a program and its defunctionalized version evaluates to the same.
 runTest :: String -> IO Bool
@@ -68,7 +38,9 @@ runTest input =
                                  return False
 
 main :: IO ()
-main = do ls <- mapM (\s -> runTest s <* line) tests
+main = do progs <- map (dropWhile isSpace) <$> splitOn "\n\n"
+                                           <$> readFile "test/tests.txt"
+          ls <- mapM (\s -> runTest s <* line) progs
           let numTests = length ls
               passed   = length $ filter id ls
           putStrLn $ "Passed " ++ show passed   ++ " out of "
