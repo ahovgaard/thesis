@@ -35,6 +35,7 @@ identifier = Token.identifier lexer
 parens     = Token.parens     lexer
 commaSep   = Token.commaSep   lexer
 brackets   = Token.brackets   lexer
+braces     = Token.braces     lexer
 colon      = Token.colon      lexer
 dot        = Token.dot        lexer
 comma      = Token.comma      lexer
@@ -64,6 +65,7 @@ parseExpr1 =  parseBool
           <|> parseLet
           <|> parseProj
           <|> parseArray
+          <|> parseRecord
           <|> parseLength
           <|> parseLoop
           <|> Num . fromIntegral <$> integer
@@ -109,6 +111,9 @@ parseProj =  Fst <$> (reserved "fst" *> parseExpr)
 parseArray :: Parser Expr
 parseArray = ArrayLit <$> brackets (commaSep parseExpr)
 
+parseRecord :: Parser Expr
+parseRecord = Record <$> parseRcdForm (reservedOp "=") parseExpr
+
 parseLength :: Parser Expr
 parseLength = Length <$> (reserved "length" *> parseExpr)
 
@@ -127,8 +132,12 @@ parseLoop = do reserved "loop"
 
 parseType :: Parser Tp
 parseType = aux `chainr1` (TpArrow <$ reservedOp "->")
-  where aux =  TpInt   <$  reserved "int"
-           <|> TpBool  <$  reserved "bool"
-           <|> TpArray <$> (reservedOp "[]" *> aux)
+  where aux =  TpInt    <$  reserved "int"
+           <|> TpBool   <$  reserved "bool"
+           <|> TpArray  <$> (reservedOp "[]" *> aux)
+           <|> TpRecord <$> parseRcdForm colon parseType
            <|> parens (do t1 <- parseType
                           (TpPair t1 <$> (try comma *> parseType)) <|> return t1)
+
+parseRcdForm :: Parser a -> Parser e -> Parser [(String, e)]
+parseRcdForm sep p = braces $ commaSep $ (,) <$> identifier <* sep <*> p
