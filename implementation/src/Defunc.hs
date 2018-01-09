@@ -65,13 +65,13 @@ lookupVar x = do env <- ask
 
 -- Looks up a variable in the environment and returns the associated residual
 -- expression along with its static value and its type. If the variable denotes
--- a first-order let-bound function, the corresponding closure and its static
--- value is returned, instead of the static value of the function variable.
-lookupFV :: Name -> DefM (Expr, StaticVal, Tp)
+-- a first-order let-bound function, the corresponding closure representation is
+-- returned instead of the function variable.
+lookupFV :: Name -> DefM (Expr, (StaticVal, Tp))
 lookupFV x = do (sv, tp) <- lookupVar x
                 case sv of
-                  DynamicFun (e, sv')  _ -> return (e, sv', tp)
-                  _                      -> return (Var x, sv, tp)
+                  DynamicFun (e, sv')  _ -> return (e, (sv', tp))
+                  _                      -> return (Var x, (sv, tp))
 
 -- Generates a fresh variable name based on a given name.
 freshVar :: Name -> DefM Name
@@ -89,13 +89,8 @@ typeFromEnv = TpRecord . map (\(x, (_, tp)) -> (x, tp))
 -- value in the DefM monad. The input expression is expected to be well typed.
 defunc :: Expr -> DefM (Expr, StaticVal)
 defunc expr = case expr of
-  Var x             -> do (sv, _) <- lookupVar x
-                          case sv of
-                            -- A variable denoting a dynamic function translates
-                            -- to the corresponding closure reresentation, while
-                            -- any other variable stays unchanged.
-                            DynamicFun clsr _ -> return clsr
-                            _                 -> return (expr, sv)
+  Var x             -> do (e, (sv, _)) <- lookupFV x
+                          return (e, sv)
 
   Num _             -> return (expr, Dynamic)
   TrueLit           -> return (expr, Dynamic)
@@ -106,9 +101,9 @@ defunc expr = case expr of
   If e1 e2 e3       -> defuncTernOp If  e1 e2 e3
 
   Lam x tp e0       -> do let fv  = freeVars expr
-                          (envVals, svs, tps) <- unzip3 <$> mapM lookupFV fv
-                          return (Record (zip fv envVals),
-                                  Lambda x tp e0 (zip fv (zip svs tps)))
+                          (envVals, svsTps) <- unzip <$> mapM lookupFV fv
+                          return (Record $ zip fv envVals,
+                                  Lambda x tp e0 $ zip fv svsTps)
 
   App e1 e2         -> do (e1', sv1) <- defuncDynFunVar e1
                           (e2', sv2) <- defunc e2

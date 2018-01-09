@@ -30,7 +30,12 @@ tests = [
     \                in \\z:int. h b + z   \
     \        in \\y:int. g y + b           \
     \in f 42"
+
+  , "let t = let y = 1               \
+    \        in (\\z:int. y+z, 10)   \
+    \in (fst t) 5"
   ]
+
 
 -- Tests that a program and its defunctionalized version evaluates to the same.
 runTest :: String -> IO Bool
