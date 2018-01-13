@@ -1,6 +1,7 @@
 module Syntax ( Name
               , Tp(..)
               , Expr(..)
+              , Pat
               , freeVars
               , subst
               , order
@@ -33,7 +34,7 @@ data Expr = Var Name
           | If Expr Expr Expr
           | Lam Name Tp Expr
           | App Expr Expr
-          | Let Name Expr Expr
+          | Let Name [Pat] Expr Expr
           | Pair Expr Expr
           | Fst Expr
           | Snd Expr
@@ -45,6 +46,8 @@ data Expr = Var Name
           | Length Expr
           | Loop Name Expr Name Expr Expr
   deriving (Show, Eq)
+
+type Pat = (Name, Tp)
 
 -- Computes the free variables of an expression in deterministic order.
 freeVars :: Expr -> [Name]
@@ -59,7 +62,8 @@ freeVars = Set.elems . fvSet
           If e1 e2 e3       -> fvSet e1 `Set.union` fvSet e2 `Set.union` fvSet e3
           Lam x _ e0        -> Set.delete x (fvSet e0)
           App e1 e2         -> fvSet e1 `Set.union` fvSet e2
-          Let x e1 e2       -> fvSet e1 `Set.union` Set.delete x (fvSet e2)
+          Let x ps e1 e2    -> (fvSet e1 `Set.difference` Set.fromList (map fst ps))
+                                 `Set.union` Set.delete x (fvSet e2)
           Pair e1 e2        -> fvSet e1 `Set.union` fvSet e2
           Fst e0            -> fvSet e0
           Snd e0            -> fvSet e0
@@ -89,9 +93,11 @@ subst x s t = case t of
     | x == y           -> t
     | otherwise        -> Lam y tp (subst x s e0)
   App e1 e2            -> App (subst x s e1) (subst x s e2)
-  Let y e1 e2
-    | x == y           -> Let y (subst x s e1) e2
-    | otherwise        -> Let y (subst x s e1) (subst x s e2)
+  Let y ps e1 e2       -> let e1' = if any (\(z, _) -> z == x) ps
+                                    then e1 else subst x s e1
+                              e2' = if x == y
+                                    then e2 else subst x s e2
+                          in Let y ps e1' e2'
   Pair e1 e2           -> Pair (subst x s e1) (subst x s e2)
   Fst e0               -> Fst (subst x s e0)
   Snd e0               -> Snd (subst x s e0)
@@ -141,8 +147,10 @@ pprExpr d e = case e of
 
   App e1 e2         -> parensIf (d > 0) $ pprExpr (d+1) e1 <+> pprExpr (d+1) e2
 
-  Let x e1 e2       -> align $  (text "let" <+> text x <+> equals <+> pprExpr d e1)
+  Let x ps e1 e2    -> align $  (text "let" <+> text x <> hsep (empty : map pprPattern ps)
+                                            <+> equals <+> pprExpr d e1)
                             <$> (text "in"  <+> pprExpr d e2)
+    where pprPattern (y, tp) = parens $ text y <+> colon <+> pretty tp
 
   Pair e1 e2        -> parens $ pprExpr d e1 <> text ", " <> pprExpr d e2
   Fst e0            -> parensIf (d > 0) $ text "fst" <+> pprExpr (d+1) e0

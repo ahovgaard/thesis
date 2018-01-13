@@ -33,7 +33,7 @@ eval expr = case expr of
                             Lam x _ e0 -> eval $ subst x v2 e0
                             _          -> Nothing
 
-  Let x e1 e2       -> do v1 <- eval e1
+  Let x ps e1 e2    -> do v1 <- eval $ foldr (uncurry Lam) e1 ps
                           eval $ subst x v1 e2
 
   Pair e1 e2        -> do v1 <- eval e1

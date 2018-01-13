@@ -41,7 +41,7 @@ extendEnvList = (++)
 -- variables to the corresponding fields in a record.
 letBindFV :: Name -> Env -> Expr -> Expr
 letBindFV _ []            e = e
-letBindFV x ((y, _) : ys) e = Let y (Select (Var x) y) $ letBindFV x ys e
+letBindFV x ((y, _) : ys) e = Let y [] (Select (Var x) y) $ letBindFV x ys e
 
 
 -- Defunctionalization monad.
@@ -127,9 +127,8 @@ defunc expr = case expr of
                                                       . extendEnvList fv) (defunc e0)
                               -- Lift lambda to top-level function with a fresh name.
                               f <- freshVar "_f"
-                              tell [Let f
-                                     $ Lam "env" (typeFromEnv fv)
-                                     $ Lam x tp (letBindFV "env" fv e0')
+                              tell [ Let f [("env", typeFromEnv fv), (x, tp)]
+                                         (letBindFV "env" fv e0')
                                    ]
                               return (App (App (Var f) e1') e2', sv)
 
@@ -145,7 +144,7 @@ defunc expr = case expr of
                                       ++ "static lambda nor a dynamic functions, but a "
                                       ++ show sv1 ++ ": " ++ show (pretty expr)
 
-  Let x e1 e2       -> do (e1', sv1) <- defuncLet e1
+  Let x _ e1 e2     -> do (pats, e1', sv1) <- defuncLet e1
                           -- (env, _) <- ask
                           -- If x is a first-order function and it is captured,
                           -- then its type will be that of its closure
@@ -159,7 +158,7 @@ defunc expr = case expr of
                             Left tpErr -> error $ "type error: " ++ show tpErr
                             Right tp1' -> do
                               (e2', sv)  <- localEnv (extendEnv x sv1 tp1') (defunc e2)
-                              return (Let x e1' e2', sv)
+                              return (Let x pats e1' e2', sv)
 
   Pair e1 e2        -> do (e1', sv1) <- defunc e1
                           (e2', sv2) <- defunc e2
@@ -234,12 +233,14 @@ defuncTernOp cons e1 e2 e3 = do
   return (cons e1' e2' e3', Dynamic)
 
 -- Keep let-bound first-order lambdas intact.
-defuncLet :: Expr -> DefM (Expr, StaticVal)
+defuncLet :: Expr -> DefM ([Pat], Expr, StaticVal)
 defuncLet expr@(Lam x tp e0)
-  | order tp == 0 = do (e0', sv0) <- localEnv (extendEnv x Dynamic tp) (defuncLet e0)
-                       clsr       <- defunc expr
-                       return (Lam x tp e0', DynamicFun clsr sv0)
-defuncLet expr    = defunc expr
+  | order tp == 0 = do (pats, e0', sv0) <- localEnv (extendEnv x Dynamic tp)
+                                                    (defuncLet e0)
+                       clsr             <- defunc expr
+                       return ((x, tp) : pats, e0', DynamicFun clsr sv0)
+defuncLet expr    = do (e, sv) <- defunc expr
+                       return ([], e, sv)
 
 -- Avoid translating a dynamic function variable into its static closure.
 -- Used in the case for application. If the dynamic function is only
@@ -256,19 +257,19 @@ defuncDynFunVar expr =
                            return (expr, sv)
                       else -- If not fully applied, lift the dynamic function.
                            do f' <- freshVar $ '_' : f
-                              let (e0, sv') = liftDynFun sv depth
-                              tell [Let f' e0]
+                              let (pats, e0, sv') = liftDynFun sv depth
+                              tell [Let f' pats e0]
                               return (Var f', replNthDynFun sv sv' depth)
                   _ -> return (expr, sv)
     _     -> defunc expr
 
 
 -- Converts a dynamic function StaticVal into a function expression.
-liftDynFun :: StaticVal -> Int -> (Expr, StaticVal)
-liftDynFun (DynamicFun clsr _) 0 = clsr
+liftDynFun :: StaticVal -> Int -> ([Pat], Expr, StaticVal)
+liftDynFun (DynamicFun (e, sv) _) 0 = ([], e, sv)
 liftDynFun (DynamicFun (_, Lambda x tp _ _) sv) i
-  | i > 0 =  let (e', sv') = liftDynFun sv (i-1)
-             in (Lam x tp e', sv')
+  | i > 0 =  let (pats, e', sv') = liftDynFun sv (i-1)
+             in ((x, tp) : pats, e', sv')
 liftDynFun sv _ = error $ "Tried to lift a StaticVal " ++ show sv
                        ++ ", but expected a dynamic function."
 

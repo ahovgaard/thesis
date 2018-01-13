@@ -24,6 +24,9 @@ emptyCtx = []
 extend :: Context -> Name -> Tp -> Context
 extend ctx s tp = (s, tp) : ctx
 
+extendList :: Context -> [(Name, Tp)] -> Context
+extendList = flip (++)
+
 lookupVar :: Context -> Name -> Either TypeError Tp
 lookupVar ctx x = case lookup x ctx of
                     Just tp -> return tp
@@ -70,11 +73,14 @@ typeOf ctx expr = case expr of
                             TpArrow tp2' tp
                               | tp2 == tp2' -> return tp
                               | otherwise   -> Left $ TypeMismatchError tp2 tp2'
-                            _ -> Left $ TypeError "function type expected"
+                            _ -> Left . TypeError
+                                   $ "function type expected: " ++ show (pretty expr)
+                                  ++ ", but received " ++ show (pretty tp1)
 
-  Let x e1 e2       -> do tp1 <- typeOf ctx e1
-                          let ctx' = extend ctx x tp1
-                          typeOf ctx' e2
+  Let x ps e1 e2    -> do let ctx' = extendList ctx ps
+                          tp1 <- typeOf ctx' e1
+                          let ctx'' = extend ctx x $ foldr TpArrow tp1 (map snd ps)
+                          typeOf ctx'' e2
 
   Pair e1 e2        -> do tp1 <- typeOf ctx e1
                           tp2 <- typeOf ctx e2
@@ -83,12 +89,14 @@ typeOf ctx expr = case expr of
   Fst e0            -> do tp0 <- typeOf ctx e0
                           case tp0 of
                             TpPair tp1 _ -> return tp1
-                            _            -> Left $ TypeError "product type expected"
+                            _            -> Left . TypeError $ "product type expected: "
+                                                            ++ show expr
 
   Snd e0            -> do tp0 <- typeOf ctx e0
                           case tp0 of
                             TpPair _ tp2 -> return tp2
-                            _            -> Left $ TypeError "product type expected"
+                            _            -> Left . TypeError $ "product type expected: "
+                                                            ++ show expr
 
   Record es         -> do tps <- mapM (typeOf ctx . snd) es
                           return . TpRecord $ zip (map fst es) tps

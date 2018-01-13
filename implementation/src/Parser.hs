@@ -91,12 +91,16 @@ parseLambda = do reservedOp "\\"
 
 parseLet :: Parser Expr
 parseLet = do reserved "let"
-              x <- identifier
+              x  <- identifier
+              ps <- many parsePattern
               reservedOp "="
               e1 <- parseExpr
               reserved "in"
               e2 <- parseExpr
-              return $ Let x e1 e2
+              return $ Let x ps e1 e2
+
+parsePattern :: Parser (Name, Tp)
+parsePattern = parens $ (,) <$> identifier <* colon <*> parseType
 
 parseParens :: Parser Expr
 parseParens = do es <- parens $ parseExpr `sepBy` comma
