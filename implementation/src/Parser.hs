@@ -1,5 +1,4 @@
 {-# OPTIONS_GHC -fno-warn-missing-signatures #-}
-
 module Parser (parseString) where
 
 import Text.Parsec
@@ -12,7 +11,7 @@ import Syntax
 
 -- Lexing
 
-reservedOpNames = [ "+", "<=", "=", "\\", ":", ".", "<" , "->", "[]" ]
+reservedOpNames = [ "+", "<=", "=", "\\", ":", ".", "<" , "->", "[]", "#" ]
 
 reservedNames   = [ "true", "false", "if", "then", "else", "let", "in"
                   , "fst", "snd", "with", "length", "loop", "for", "do"
@@ -23,6 +22,7 @@ lexerConfig = emptyDef { Token.reservedOpNames = reservedOpNames
                        , Token.reservedNames   = reservedNames
                        , Token.identStart      = letter
                        , Token.identLetter     = alphaNum <|> char '\''
+                       , Token.commentLine     = "--"
                        }
 
 lexer = Token.makeTokenParser lexerConfig
@@ -56,7 +56,7 @@ parseString :: String -> Either ParseError Expr
 parseString = parse (parseExpr <* eof) ""
 
 parseExpr :: Parser Expr
-parseExpr = buildExpressionParser opTable parseExpr1
+parseExpr = buildExpressionParser opTable (whitespace *> parseExpr1)
 
 parseExpr1 :: Parser Expr
 parseExpr1 =  parseBool
@@ -66,6 +66,7 @@ parseExpr1 =  parseBool
           <|> parseProj
           <|> parseArray
           <|> parseRecord
+          <|> parseSelect
           <|> parseLength
           <|> parseLoop
           <|> Num . fromIntegral <$> integer
@@ -113,6 +114,12 @@ parseArray = ArrayLit <$> brackets (commaSep parseExpr)
 
 parseRecord :: Parser Expr
 parseRecord = Record <$> parseRcdForm (reservedOp "=") parseExpr
+
+parseSelect :: Parser Expr
+parseSelect = do reservedOp "#"
+                 l <- identifier
+                 e <- parseExpr
+                 return $ Select e l
 
 parseLength :: Parser Expr
 parseLength = Length <$> (reserved "length" *> parseExpr)

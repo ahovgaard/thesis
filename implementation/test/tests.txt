@@ -1,23 +1,39 @@
+-- Simple call to a local first-order function. Program should stay unchanged.
 let f = \x:int. x+x
 in f 1 + f 2
 
 
+-- Two calls to a local function of which the outermost abstraction can be
+-- preserved, so the (partial) calls "f 1" and "f 3" are preserved and returns a
+-- record. It would be better if only one lifted function was created.
 let f = \x:int. let a = 1
-                 in \y:int. x+y+a
+                in \y:int. x+y+a
 in f 1 2 + f 3 4
 
 
+-- Local function defined inside a local function.
 let f = let g = (let a = 1
                  in \x:int. x+a)
         in \y:int. g 2 + y
 in f 3
 
 
+-- Renaming and applying a local first-order function. Since we cannot bind a
+-- function to another variable, we expect that a new top-level function is
+-- created, with an empty environment record parameter.
 let f = \x:int. x+x
 in let g = f
    in g 5
 
 
+-- A similar example with multiple arguments.
+let f = \x:int. \y:int. \z:int. x+y+z
+in let g = f
+   in g 1 2 3
+
+
+-- A local function with a free variable that itself is a function that closes
+-- over its own local variables, i.e., a closure inside a closure environment.
 let f = let b = 2 in
         let g = let a = 1 in
                 let h = \x:int. x+a
@@ -26,6 +42,62 @@ let f = let b = 2 in
 in f 42
 
 
+-- Another example of function referring to another local function with its own
+-- free variables.
+let f = let a = 1 in
+        let g = let b = 2
+                in \x:int. x+b
+        in \y:int. g y + a
+in f 42
+
+
+-- A local function inside a local function inside a local function.
+let f = let a = 1 in
+        let g = let b = 2 in
+                let h = let c = 3
+                        in \x:int. x+a+b+c
+                in \y:int. h (h y)
+        in \z:int. g z
+in f 5
+
+
+-- More in the same style.
+let f = let g = let h = let a = 1 in
+                        let b = 2 in
+                        let c = 3 in \x:int. x+a+b+c
+                in \y:int. h (h y)
+        in \z:int. g z
+in f 5
+
+
+-- A pair containing a function and a projection followed by an application.
 let t = let y = 1
         in (\z:int. y+z, 10)
 in (fst t) 5
+
+
+-- A record containing a lambda and a reference to a local first-order function.
+-- Selection of functions from the record and application.
+let f = \x:int. \y:int. x+y in
+let r = { a = 42, b = f, c = \z:int. z+z }
+in (#c r) 2 + (#b r) 3 4 + (#a r)
+
+
+-- A record containing functions with local variables.
+let r = let a = 1 in
+        let b = 2 in { f = \x:int. x+a, g = \y:int. y+a+b }
+in (#f r) 1 + (#g r) 2
+
+
+-- Partial application of first-order let-bound function.  We expect to see two
+-- new lifted functions: one which takes two arguments "x" and "y" and captures
+-- them in a record, and another which takes a record of "x" and "y" and a third
+-- argument "z" and computes the lambda body.
+let f = \x:int. \y:int. \z:int. x+y+z
+in let g = f 1 2 in g 3
+
+
+-- Partial application of a local first-order function inside a record.
+let f = \x:int. \y:int. x+y
+in let r = { a = 42, b = f 1, c = \z:int. z+z }
+   in (#c r) 2 + (#b r) 3
