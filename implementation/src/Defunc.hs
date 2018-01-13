@@ -2,6 +2,7 @@
 module Defunc ( StaticVal(..)
               , defunc
               , runDefM
+              , execDefM
               , defuncStr
               , defuncExpr
               ) where
@@ -44,21 +45,25 @@ letBindFV x ((y, _) : ys) e = Let y (Select (Var x) y) $ letBindFV x ys e
 
 
 -- Defunctionalization monad.
-newtype DefM a = DefM (ReaderT Env
+newtype DefM a = DefM (ReaderT (Env, Int)
                         (WriterT [Expr -> Expr]
                           (State Int)) a)
   deriving (Monad, Functor, Applicative,
-            MonadReader Env,
+            MonadReader (Env, Int),
             MonadWriter [Expr -> Expr],
             MonadState Int)
 
 runDefM :: DefM (Expr, StaticVal) -> Expr
 runDefM (DefM m) = foldr (.) id bindings expr
-  where ((expr, _), bindings) = evalState (runWriterT $ runReaderT m emptyEnv) 0
+  where ((expr, _), bindings) = evalState (runWriterT $ runReaderT m (emptyEnv, 0)) 0
+
+execDefM :: DefM (Expr, StaticVal) -> (Expr, StaticVal)
+execDefM (DefM m) = (foldr (.) id bindings expr, sv)
+  where ((expr, sv), bindings) = evalState (runWriterT $ runReaderT m (emptyEnv, 0)) 0
 
 -- Looks up the associated static value and type of a given name.
 lookupVar :: Name -> DefM (StaticVal, Tp)
-lookupVar x = do env <- ask
+lookupVar x = do (env, _) <- ask
                  case lookup x env of
                    Just v  -> return v
                    Nothing -> error $ "variable " ++ x ++ " is out of scope"
@@ -84,6 +89,15 @@ freshVar x = do s <- get
 typeFromEnv :: Env -> Tp
 typeFromEnv = TpRecord . map (\(x, (_, tp)) -> (x, tp))
 
+-- Increase the depth of function application.
+incrDepth :: DefM a -> DefM a
+incrDepth = local (\(env, depth) -> (env, depth + 1))
+
+-- Locally extend the environment in a subcomputation.
+localEnv :: (Env -> Env) -> DefM a -> DefM a
+localEnv f = local $ \(env, d) -> (f env, d)
+
+
 -- Main defunctionalization function. Given an expression, returns an equivalent
 -- expression without any higher-order subexpression, and the associated static
 -- value in the DefM monad. The input expression is expected to be well typed.
@@ -105,12 +119,12 @@ defunc expr = case expr of
                           return (Record $ zip fv envVals,
                                   Lambda x tp e0 $ zip fv svsTps)
 
-  App e1 e2         -> do (e1', sv1) <- defuncDynFunVar e1
+  App e1 e2         -> do (e1', sv1) <- incrDepth $ defuncDynFunVar e1
                           (e2', sv2) <- defunc e2
                           case sv1 of
                             Lambda x tp e0 fv -> do
-                              (e0', sv) <- local (extendEnv x sv2 tp
-                                                   . extendEnvList fv) (defunc e0)
+                              (e0', sv) <- localEnv (extendEnv x sv2 tp
+                                                      . extendEnvList fv) (defunc e0)
                               -- Lift lambda to top-level function with a fresh name.
                               f <- freshVar "_f"
                               tell [Let f
@@ -129,21 +143,22 @@ defunc expr = case expr of
 
                             _ -> error $ "application of an expression that is neither a "
                                       ++ "static lambda nor a dynamic functions, but a "
-                                      ++ show sv1
+                                      ++ show sv1 ++ ": " ++ show (pretty expr)
 
   Let x e1 e2       -> do (e1', sv1) <- defuncLet e1
-                          env <- ask
+                          -- (env, _) <- ask
                           -- If x is a first-order function and it is captured,
                           -- then its type will be that of its closure
                           -- representation rather than its functional type.
-                          let tp1 = typeOf (map (\(y, (_, tp)) -> (y, tp)) env)
-                                           (case sv1 of
-                                              DynamicFun (clsr, _) _ -> clsr
-                                              _                      -> e1')
+                          let tp1 = Right TpInt :: Either TypeError Tp
+                                    -- typeOf (map (\(y, (_, tp)) -> (y, tp)) env)
+                                    --        (case sv1 of
+                                    --           DynamicFun (clsr, _) _ -> clsr
+                                    --           _                      -> e1')
                           case tp1 of
                             Left tpErr -> error $ "type error: " ++ show tpErr
                             Right tp1' -> do
-                              (e2', sv)  <- local (extendEnv x sv1 tp1') (defunc e2)
+                              (e2', sv)  <- localEnv (extendEnv x sv1 tp1') (defunc e2)
                               return (Let x e1' e2', sv)
 
   Pair e1 e2        -> do (e1', sv1) <- defunc e1
@@ -221,18 +236,57 @@ defuncTernOp cons e1 e2 e3 = do
 -- Keep let-bound first-order lambdas intact.
 defuncLet :: Expr -> DefM (Expr, StaticVal)
 defuncLet expr@(Lam x tp e0)
-  | order tp == 0 = do (e0', sv0) <- local (extendEnv x Dynamic tp) (defuncLet e0)
+  | order tp == 0 = do (e0', sv0) <- localEnv (extendEnv x Dynamic tp) (defuncLet e0)
                        clsr       <- defunc expr
                        return (Lam x tp e0', DynamicFun clsr sv0)
 defuncLet expr    = defunc expr
 
--- Avoid translating a dynamic function variable into its static
--- closure. Used in the case for application.
+-- Avoid translating a dynamic function variable into its static closure.
+-- Used in the case for application. If the dynamic function is only
+-- partially applied, a new lifted function is created.
 defuncDynFunVar :: Expr -> DefM (Expr, StaticVal)
-defuncDynFunVar expr = case expr of
-                         Var x -> do (sv, _) <- lookupVar x
-                                     return (expr, sv)
-                         _     -> defunc expr
+defuncDynFunVar expr =
+  case expr of
+    Var f -> do (sv, _) <- lookupVar f
+                case sv of
+                  DynamicFun _ _ -> do
+                    (_, depth) <- ask  -- Get the depth of application.
+                    if fullyApplied sv depth
+                      then -- If fully applied, just return the variable unchanged.
+                           return (expr, sv)
+                      else -- If not fully applied, lift the dynamic function.
+                           do f' <- freshVar $ '_' : f
+                              let (e0, sv') = liftDynFun sv depth
+                              tell [Let f' e0]
+                              return (Var f', replNthDynFun sv sv' depth)
+                  _ -> return (expr, sv)
+    _     -> defunc expr
+
+
+-- Converts a dynamic function StaticVal into a function expression.
+liftDynFun :: StaticVal -> Int -> (Expr, StaticVal)
+liftDynFun (DynamicFun clsr _) 0 = clsr
+liftDynFun (DynamicFun (_, Lambda x tp _ _) sv) i
+  | i > 0 =  let (e', sv') = liftDynFun sv (i-1)
+             in (Lam x tp e', sv')
+liftDynFun sv _ = error $ "Tried to lift a StaticVal " ++ show sv
+                       ++ ", but expected a dynamic function."
+
+-- Replace the n'th StaticVal in a sequence of DynamicFun's.
+replNthDynFun :: StaticVal -> StaticVal -> Int -> StaticVal
+replNthDynFun _                    sv' 0 = sv'
+replNthDynFun (DynamicFun clsr sv) sv' d = DynamicFun clsr $ replNthDynFun sv sv' (d-1)
+replNthDynFun sv _ n = error $ "Tried to replace the " ++ show n
+                             ++ "'th StaticVal in " ++ show sv
+
+-- Checks if a StaticVal and a given application depth correspond
+-- to a fully applied dynamic function.
+fullyApplied :: StaticVal -> Int -> Bool
+fullyApplied Dynamic           0         = True
+fullyApplied (Lambda _ _ _ _)  _         = True
+fullyApplied (DynamicFun _ sv) d | d > 0 = fullyApplied sv (d-1)
+fullyApplied _ _                         = False
+
 
 defuncExpr :: Expr -> Expr
 defuncExpr = runDefM . defunc
