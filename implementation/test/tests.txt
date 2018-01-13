@@ -101,3 +101,7 @@ in let g = f 1 2 in g 3
 let f = \x:int. \y:int. x+y
 in let r = { a = 42, b = f 1, c = \z:int. z+z }
    in (#c r) 2 + (#b r) 3
+
+
+-- Nested application (broken, result is not first-order).
+(#g { g = let f = \x:int. \y:int. x+y in f 1 }) 2
