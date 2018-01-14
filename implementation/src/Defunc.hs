@@ -2,7 +2,6 @@
 module Defunc ( StaticVal(..)
               , defunc
               , runDefM
-              , execDefM
               , defuncStr
               , defuncExpr
               ) where
@@ -14,27 +13,29 @@ import Control.Monad.Writer
 
 import Parser
 import Syntax
-import TypeChecker
 
 -- Type of data storing additional information about the result of
 -- defunctionalization of an expression, aside from the residual expression.
-data StaticVal = Dynamic
+data StaticVal = Dynamic Tp
                | Lambda Name Tp Expr Env
                | Tuple StaticVal StaticVal
                | Rcd [(Name, StaticVal)]
-               | DynamicFun (Expr, StaticVal) StaticVal
   deriving (Show, Eq)
 
--- Environment mapping variable names to their associated static value and type.
-type Env = [(Name, (StaticVal, Tp))]
+isDynamic :: StaticVal -> Bool
+isDynamic (Dynamic _) = True
+isDynamic _           = False
+
+-- Environment mapping variable names to their associated static value.
+type Env = [(Name, StaticVal)]
 
 emptyEnv :: Env
 emptyEnv = []
 
-extendEnv :: Name -> StaticVal -> Tp -> Env -> Env
-extendEnv x sv tp env = (x, (sv, tp)) : env
+extendEnv :: Name -> StaticVal -> Env -> Env
+extendEnv x sv env = (x, sv) : env
 
-extendEnvList :: [(Name, (StaticVal, Tp))] -> Env -> Env
+extendEnvList :: [(Name, StaticVal)] -> Env -> Env
 extendEnvList = (++)
 
 -- Generates a nested sequence of let-bindings, binding the free
@@ -45,38 +46,24 @@ letBindFV x ((y, _) : ys) e = Let y [] (Select (Var x) y) $ letBindFV x ys e
 
 
 -- Defunctionalization monad.
-newtype DefM a = DefM (ReaderT (Env, Int)
+newtype DefM a = DefM (ReaderT Env
                         (WriterT [Expr -> Expr]
                           (State Int)) a)
   deriving (Monad, Functor, Applicative,
-            MonadReader (Env, Int),
+            MonadReader Env,
             MonadWriter [Expr -> Expr],
             MonadState Int)
 
 runDefM :: DefM (Expr, StaticVal) -> Expr
 runDefM (DefM m) = foldr (.) id bindings expr
-  where ((expr, _), bindings) = evalState (runWriterT $ runReaderT m (emptyEnv, 0)) 0
-
-execDefM :: DefM (Expr, StaticVal) -> (Expr, StaticVal)
-execDefM (DefM m) = (foldr (.) id bindings expr, sv)
-  where ((expr, sv), bindings) = evalState (runWriterT $ runReaderT m (emptyEnv, 0)) 0
+  where ((expr, _), bindings) = evalState (runWriterT $ runReaderT m emptyEnv) 0
 
 -- Looks up the associated static value and type of a given name.
-lookupVar :: Name -> DefM (StaticVal, Tp)
-lookupVar x = do (env, _) <- ask
+lookupVar :: Name -> DefM StaticVal
+lookupVar x = do env <- ask
                  case lookup x env of
                    Just v  -> return v
                    Nothing -> error $ "variable " ++ x ++ " is out of scope"
-
--- Looks up a variable in the environment and returns the associated residual
--- expression along with its static value and its type. If the variable denotes
--- a first-order let-bound function, the corresponding closure representation is
--- returned instead of the function variable.
-lookupFV :: Name -> DefM (Expr, (StaticVal, Tp))
-lookupFV x = do (sv, tp) <- lookupVar x
-                case sv of
-                  DynamicFun (e, sv')  _ -> return (e, (sv', tp))
-                  _                      -> return (Var x, (sv, tp))
 
 -- Generates a fresh variable name based on a given name.
 freshVar :: Name -> DefM Name
@@ -84,18 +71,12 @@ freshVar x = do s <- get
                 put (s+1)
                 return $ x ++ show s
 
--- Given an environment, construct a corresponding record type for storing the
--- values of the environment.
-typeFromEnv :: Env -> Tp
-typeFromEnv = TpRecord . map (\(x, (_, tp)) -> (x, tp))
-
--- Increase the depth of function application.
-incrDepth :: DefM a -> DefM a
-incrDepth = local (\(env, depth) -> (env, depth + 1))
-
--- Locally extend the environment in a subcomputation.
-localEnv :: (Env -> Env) -> DefM a -> DefM a
-localEnv f = local $ \(env, d) -> (f env, d)
+-- Given a static value, compute the type of the residual expression.
+typeFromSV :: StaticVal -> Tp
+typeFromSV (Dynamic tp)       = tp
+typeFromSV (Lambda _ _ _ env) = TpRecord $ map (\(x, sv) -> (x, typeFromSV sv)) env
+typeFromSV (Tuple sv1 sv2)    = TpPair (typeFromSV sv1) (typeFromSV sv2)
+typeFromSV (Rcd ls)           = TpRecord $ map (\(x, sv) -> (x, typeFromSV sv)) ls
 
 
 -- Main defunctionalization function. Given an expression, returns an equivalent
@@ -103,62 +84,61 @@ localEnv f = local $ \(env, d) -> (f env, d)
 -- value in the DefM monad. The input expression is expected to be well typed.
 defunc :: Expr -> DefM (Expr, StaticVal)
 defunc expr = case expr of
-  Var x             -> do (e, (sv, _)) <- lookupFV x
-                          return (e, sv)
+  Var x             -> do sv <- lookupVar x
+                          return (expr, sv)
 
-  Num _             -> return (expr, Dynamic)
-  TrueLit           -> return (expr, Dynamic)
-  FalseLit          -> return (expr, Dynamic)
+  Num _             -> return (expr, Dynamic TpInt)
+  TrueLit           -> return (expr, Dynamic TpBool)
+  FalseLit          -> return (expr, Dynamic TpBool)
 
-  Add e1 e2         -> defuncBinOp  Add e1 e2
-  LEq e1 e2         -> defuncBinOp  LEq e1 e2
-  If e1 e2 e3       -> defuncTernOp If  e1 e2 e3
+  Add e1 e2         -> do (e1', sv1) <- defunc e1
+                          (e2', sv2) <- defunc e2
+                          unless (isDynamic sv1 && isDynamic sv2)
+                                 (error $ "binary operation \"" ++ show (pretty expr)
+                                       ++ "\" expected dynamic operands")
+                          return (Add e1' e2', Dynamic TpInt)
 
-  Lam x tp e0       -> do let fv  = freeVars expr
-                          (envVals, svsTps) <- unzip <$> mapM lookupFV fv
-                          return (Record $ zip fv envVals,
+  LEq e1 e2         -> do (e1', sv1) <- defunc e1
+                          (e2', sv2) <- defunc e2
+                          unless (isDynamic sv1 && isDynamic sv2)
+                                 (error $ "binary operation \"" ++ show (pretty expr)
+                                       ++ "\" expected dynamic operands")
+                          return (LEq e1' e2', Dynamic TpBool)
+
+
+  If e1 e2 e3       -> do (e1', sv1) <- defunc e1
+                          (e2', sv2) <- defunc e2
+                          (e3', sv3) <- defunc e3
+                          unless (all isDynamic [sv1, sv2, sv3])
+                                 (error $ "conditional \"" ++ show (pretty expr)
+                                       ++ "\" expected dynamic operands")
+                          return (If e1' e2' e3', sv2)
+
+  Lam x tp e0       -> do let fv = freeVars expr
+                          svsTps <- mapM lookupVar fv
+                          return (Record $ map (\v -> (v, Var v)) fv,
                                   Lambda x tp e0 $ zip fv svsTps)
 
-  App e1 e2         -> do (e1', sv1) <- incrDepth $ defuncDynFunVar e1
+  App e1 e2         -> do (e1', sv1) <- defunc e1
                           (e2', sv2) <- defunc e2
                           case sv1 of
                             Lambda x tp e0 fv -> do
-                              (e0', sv) <- localEnv (extendEnv x sv2 tp
-                                                      . extendEnvList fv) (defunc e0)
+                              (e0', sv) <- local (extendEnv x sv2
+                                                   . extendEnvList fv) (defunc e0)
                               -- Lift lambda to top-level function with a fresh name.
                               f <- freshVar "_f"
-                              tell [ Let f [("env", typeFromEnv fv), (x, tp)]
+                              tell [ Let f [("env", typeFromSV sv1), (x, tp)]
                                          (letBindFV "env" fv e0')
                                    ]
                               return (App (App (Var f) e1') e2', sv)
-
-                            -- In the case of an application of a first-order
-                            -- let-bound function, just leave the application in place.
-                            DynamicFun _ sv ->
-                              case sv2 of Dynamic -> return (App e1' e2', sv)
-                                          _ -> error $ "expected dynamic argument to "
-                                                    ++ "let-bound first-order function, "
-                                                    ++ "but received a " ++ show sv2
 
                             _ -> error $ "application of an expression that is neither a "
                                       ++ "static lambda nor a dynamic functions, but a "
                                       ++ show sv1 ++ ": " ++ show (pretty expr)
 
-  Let x _ e1 e2     -> do (pats, e1', sv1) <- defuncLet e1
-                          -- (env, _) <- ask
-                          -- If x is a first-order function and it is captured,
-                          -- then its type will be that of its closure
-                          -- representation rather than its functional type.
-                          let tp1 = Right TpInt :: Either TypeError Tp
-                                    -- typeOf (map (\(y, (_, tp)) -> (y, tp)) env)
-                                    --        (case sv1 of
-                                    --           DynamicFun (clsr, _) _ -> clsr
-                                    --           _                      -> e1')
-                          case tp1 of
-                            Left tpErr -> error $ "type error: " ++ show tpErr
-                            Right tp1' -> do
-                              (e2', sv)  <- localEnv (extendEnv x sv1 tp1') (defunc e2)
-                              return (Let x pats e1' e2', sv)
+  Let x _ e1 e2     -> do (e1', sv1) <- defunc e1
+                          (e2', sv2) <- local (extendEnv x sv1) (defunc e2)
+                          return (Let x [] e1' e2', sv2)
 
   Pair e1 e2        -> do (e1', sv1) <- defunc e1
                           (e2', sv2) <- defunc e2
@@ -167,21 +147,21 @@ defunc expr = case expr of
   Fst e0            -> do (e0', sv0) <- defunc e0
                           case sv0 of
                             Tuple sv1 _ -> return (Fst e0', sv1)
-                            Dynamic     -> return (Fst e0', sv0)
+                            Dynamic _   -> return (Fst e0', sv0)
                             _ -> error $ "projection of an expression that is neither "
                                       ++ "dynamic nor a statically known pair"
 
   Snd e0            -> do (e0', sv0) <- defunc e0
                           case sv0 of
                             Tuple _ sv2 -> return (Snd e0', sv2)
-                            Dynamic     -> return (Snd e0', sv0)
+                            Dynamic _   -> return (Snd e0', sv0)
                             _ -> error $ "projection of an expression that is neither "
                                       ++ "dynamic nor a statically known pair"
 
   Select e0 l       -> do (e0', sv0) <- defunc e0
                           case sv0 of
-                            Dynamic -> return (expr, Dynamic)
-                            Rcd svs -> case lookup l svs of
+                            Dynamic _ -> return (expr, sv0)
+                            Rcd svs   -> case lookup l svs of
                               Just sv -> return (Select e0' l, sv)
                               Nothing -> error "invalid record selection"
                             _ -> error $ "record selection of a " ++ show sv0
@@ -193,101 +173,41 @@ defunc expr = case expr of
                           return (Record ls', Rcd svs)
 
   ArrayLit es       -> do (es', svs) <- unzip <$> mapM defunc es
-                          unless (all (== Dynamic) svs)
+                          unless (all isDynamic svs)
                             $ error "array literal with static element(s)"
-                          return (ArrayLit es', Dynamic)
+                          case svs of
+                            (Dynamic tp : _) -> return (ArrayLit es', Dynamic (TpArray tp))
+                            _                -> error $ "type error: " ++ show (pretty expr)
 
-  Index e1 e2       -> defuncBinOp  Index  e1 e2
-  Update e1 e2 e3   -> defuncTernOp Update e1 e2 e3
+  Index e1 e2       -> do (e1', sv1) <- defunc e1
+                          (e2', sv2) <- defunc e2
+                          unless (isDynamic sv1 && isDynamic sv2)
+                                 (error $ "binary operation \"" ++ show (pretty expr)
+                                       ++ "\" expected dynamic operands")
+                          case sv1 of
+                            Dynamic (TpArray tp) ->
+                              return (Index e1' e2', Dynamic tp)
+                            _ -> error $ "type error: " ++ show (pretty expr)
+
+  Update e1 e2 e3   -> do (e1', sv1) <- defunc e1
+                          (e2', sv2) <- defunc e2
+                          (e3', sv3) <- defunc e3
+                          unless (all isDynamic [sv1, sv2, sv3])
+                                 (error $ "array update \"" ++ show (pretty expr)
+                                       ++ "\" expected dynamic operands")
+                          return (Update e1' e2' e3', sv1)
 
   Length e1         -> do (e1', sv1) <- defunc e1
-                          unless (sv1 == Dynamic)
+                          unless (isDynamic sv1)
                             $ error "non-dynamic argument to length"
-                          return (Length e1', Dynamic)
+                          return (Length e1', Dynamic TpInt)
 
   Loop x e1 y e2 e3 -> do (e1', sv1) <- defunc e1
                           (e2', sv2) <- defunc e2
                           (e3', sv3) <- defunc e3
-                          unless (all (== Dynamic) [sv1, sv2, sv3])
+                          unless (all isDynamic [sv1, sv2, sv3])
                             $ error "loop with static operand(s)"
-                          return (Loop x e1' y e2' e3', Dynamic)
-
-defuncBinOp :: (Expr -> Expr -> Expr) -> Expr -> Expr -> DefM (Expr, StaticVal)
-defuncBinOp cons e1 e2 = do
-  (e1', sv1) <- defunc e1
-  (e2', sv2) <- defunc e2
-  unless (sv1 == Dynamic && sv2 == Dynamic)
-         (error $ "binary operation \"" ++ show (cons e1 e2)
-               ++ "\" expected dynamic operands")
-  return (cons e1' e2', Dynamic)
-
-defuncTernOp :: (Expr -> Expr -> Expr -> Expr) -> Expr -> Expr -> Expr
-             -> DefM (Expr, StaticVal)
-defuncTernOp cons e1 e2 e3 = do
-  (e1', sv1) <- defunc e1
-  (e2', sv2) <- defunc e2
-  (e3', sv3) <- defunc e3
-  unless (sv1 == Dynamic && sv2 == Dynamic && sv3 == Dynamic)
-         (error $ "ternary operation \"" ++ show (pretty (cons e1 e2 e3))
-               ++ "\" expected dynamic operands")
-  return (cons e1' e2' e3', Dynamic)
-
--- Keep let-bound first-order lambdas intact.
-defuncLet :: Expr -> DefM ([Pat], Expr, StaticVal)
-defuncLet expr@(Lam x tp e0)
-  | order tp == 0 = do (pats, e0', sv0) <- localEnv (extendEnv x Dynamic tp)
-                                                    (defuncLet e0)
-                       clsr             <- defunc expr
-                       return ((x, tp) : pats, e0', DynamicFun clsr sv0)
-defuncLet expr    = do (e, sv) <- defunc expr
-                       return ([], e, sv)
-
--- Avoid translating a dynamic function variable into its static closure.
--- Used in the case for application. If the dynamic function is only
--- partially applied, a new lifted function is created.
-defuncDynFunVar :: Expr -> DefM (Expr, StaticVal)
-defuncDynFunVar expr =
-  case expr of
-    Var f -> do (sv, _) <- lookupVar f
-                case sv of
-                  DynamicFun _ _ -> do
-                    (_, depth) <- ask  -- Get the depth of application.
-                    if fullyApplied sv depth
-                      then -- If fully applied, just return the variable unchanged.
-                           return (expr, sv)
-                      else -- If not fully applied, lift the dynamic function.
-                           do f' <- freshVar $ '_' : f
-                              let (pats, e0, sv') = liftDynFun sv depth
-                              tell [Let f' pats e0]
-                              return (Var f', replNthDynFun sv sv' depth)
-                  _ -> return (expr, sv)
-    _     -> defunc expr
-
-
--- Converts a dynamic function StaticVal into a function expression.
-liftDynFun :: StaticVal -> Int -> ([Pat], Expr, StaticVal)
-liftDynFun (DynamicFun (e, sv) _) 0 = ([], e, sv)
-liftDynFun (DynamicFun (_, Lambda x tp _ _) sv) i
-  | i > 0 =  let (pats, e', sv') = liftDynFun sv (i-1)
-             in ((x, tp) : pats, e', sv')
-liftDynFun sv _ = error $ "Tried to lift a StaticVal " ++ show sv
-                       ++ ", but expected a dynamic function."
-
--- Replace the n'th StaticVal in a sequence of DynamicFun's.
-replNthDynFun :: StaticVal -> StaticVal -> Int -> StaticVal
-replNthDynFun _                    sv' 0 = sv'
-replNthDynFun (DynamicFun clsr sv) sv' d = DynamicFun clsr $ replNthDynFun sv sv' (d-1)
-replNthDynFun sv _ n = error $ "Tried to replace the " ++ show n
-                             ++ "'th StaticVal in " ++ show sv
-
--- Checks if a StaticVal and a given application depth correspond
--- to a fully applied dynamic function.
-fullyApplied :: StaticVal -> Int -> Bool
-fullyApplied Dynamic           0         = True
-fullyApplied (Lambda _ _ _ _)  _         = True
-fullyApplied (DynamicFun _ sv) d | d > 0 = fullyApplied sv (d-1)
-fullyApplied _ _                         = False
-
+                          return (Loop x e1' y e2' e3', sv3)
 
 defuncExpr :: Expr -> Expr
 defuncExpr = runDefM . defunc
