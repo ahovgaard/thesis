@@ -18,7 +18,7 @@ process s = case parseString s of
       Right tp   -> do
         putStrLn $ "Type: " ++ show (pretty tp)
         putStrLn "Result program:\n"
-        print . pretty . runDefM $ defunc e
+        print . pretty $ defuncExpr e
 
 main :: IO ()
 main = runInputT defaultSettings loop
