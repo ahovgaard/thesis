@@ -26,7 +26,7 @@ runTest input =
 
              putStrLn "\nType:"
              case typeOf emptyCtx expr' of
-               Left typeErr -> putStrLn $ "type error: " ++ show typeErr
+               Left typeErr -> error $ "type error: " ++ show typeErr
                Right tp'    -> print $ pretty tp'
 
              case (eval expr, eval expr') of

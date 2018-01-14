@@ -105,3 +105,39 @@ in let r = { a = 42, b = f 1, c = \z:int. z+z }
 
 -- Nested application (broken, result is not first-order).
 (#g { g = let f = \x:int. \y:int. x+y in f 1 }) 2
+
+
+-- Simple functional argument.
+let add1 = \y:int. y+1
+in let twice = \g:int->int. \x:int. g (g x)
+   in twice add1 5
+
+
+-- id id id
+let id1 = \x:int. x
+in let id2 = \y:int->int. y
+   in let id3 = \z:(int->int)->(int->int). z
+      in id3 id2 id1 7
+
+-- "id id id" eta expanded
+let id1 = \a:int. a
+in let id2 = \b:int->int. \c:int. b c
+   in let id3 = \d:(int->int)->(int->int). \e:int->int. \f:int. d e f
+      in id3 id2 id1 7
+
+
+let add1 (z:int) = z+1
+in let f = \x:int. \g:int->int. \h:(int->int)->(int->int).
+             let a = 1
+             in h g (g x) + g a
+   in f 5 add1 (\k:int->int. \n:int. k (k n))
+
+
+-- Simple partially dynamic function with a functional argument.
+let f = \x:int. \g:int->int. g (g x)
+in f 5 (\y:int. y+1)
+
+
+-- Same but using parameters in let instead of lambda's.
+let f (x:int) (g:int->int) = g (g x)
+in f 5 (\y:int. y+1)
