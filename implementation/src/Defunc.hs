@@ -17,7 +17,7 @@ import Syntax
 -- Type of data storing additional information about the result of
 -- defunctionalization of an expression, aside from the residual expression.
 data StaticVal = Dynamic Tp
-               | Lambda Name Tp Expr Env
+               | Lambda Name Expr Env
                | Tuple StaticVal StaticVal
                | Rcd [(Name, StaticVal)]
   deriving (Show, Eq)
@@ -73,10 +73,10 @@ freshVar x = do s <- get
 
 -- Given a static value, compute the type of the residual expression.
 typeFromSV :: StaticVal -> Tp
-typeFromSV (Dynamic tp)       = tp
-typeFromSV (Lambda _ _ _ env) = TpRecord $ map (\(x, sv) -> (x, typeFromSV sv)) env
-typeFromSV (Tuple sv1 sv2)    = TpPair (typeFromSV sv1) (typeFromSV sv2)
-typeFromSV (Rcd ls)           = TpRecord $ map (\(x, sv) -> (x, typeFromSV sv)) ls
+typeFromSV (Dynamic tp)     = tp
+typeFromSV (Lambda _ _ env) = TpRecord $ map (\(x, sv) -> (x, typeFromSV sv)) env
+typeFromSV (Tuple sv1 sv2)  = TpPair (typeFromSV sv1) (typeFromSV sv2)
+typeFromSV (Rcd ls)         = TpRecord $ map (\(x, sv) -> (x, typeFromSV sv)) ls
 
 
 -- Main defunctionalization function. Given an expression, returns an equivalent
@@ -114,20 +114,21 @@ defunc expr = case expr of
                                        ++ "\" expected dynamic operands")
                           return (If e1' e2' e3', sv2)
 
-  Lam x tp e0       -> do let fv = freeVars expr
+  Lam x _ e0        -> do let fv = freeVars expr
                           svsTps <- mapM lookupVar fv
                           return (Record $ map (\v -> (v, Var v)) fv,
-                                  Lambda x tp e0 $ zip fv svsTps)
+                                  Lambda x e0 $ zip fv svsTps)
 
   App e1 e2         -> do (e1', sv1) <- defunc e1
                           (e2', sv2) <- defunc e2
                           case sv1 of
-                            Lambda x tp e0 fv -> do
+                            Lambda x e0 fv -> do
                               (e0', sv) <- local (extendEnv x sv2
                                                    . extendEnvList fv) (defunc e0)
                               -- Lift lambda to top-level function with a fresh name.
                               f <- freshVar "_f"
-                              tell [ Let f [("env", typeFromSV sv1), (x, tp)]
+                              tell [ Let f [ ("env", typeFromSV sv1)
+                                           , (x,     typeFromSV sv2) ]
                                          (letBindFV "env" fv e0')
                                    ]
                               return (App (App (Var f) e1') e2', sv)
