@@ -3,9 +3,7 @@ module Defunc ( defuncExpr
               , defuncStr
               ) where
 
-import Control.Monad.Reader
-import Control.Monad.State
-import Control.Monad.Writer
+import Control.Monad.RWS
 
 import Parser
 import Syntax
@@ -38,9 +36,7 @@ letBindFV x = flip $ foldr (\(y, _) -> Let y [] $ Select (Var x) y)
 
 
 -- Defunctionalization monad.
-newtype DefM a = DefM (ReaderT Env
-                        (WriterT [Expr -> Expr]
-                          (State Int)) a)
+newtype DefM a = DefM (RWS Env [Expr -> Expr] Int a)
   deriving (Monad, Functor, Applicative,
             MonadReader Env,
             MonadWriter [Expr -> Expr],
@@ -48,7 +44,7 @@ newtype DefM a = DefM (ReaderT Env
 
 runDefM :: DefM (Expr, StaticVal) -> Expr
 runDefM (DefM m) = foldr (.) id bindings expr
-  where ((expr, _), bindings) = evalState (runWriterT $ runReaderT m emptyEnv) 0
+  where ((expr, _), bindings) = evalRWS m emptyEnv 0
 
 defuncExpr :: Expr -> Expr
 defuncExpr = runDefM . defunc
