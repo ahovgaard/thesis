@@ -18,7 +18,7 @@ runTest input =
         Right tp     ->
           do let expr' = defuncExpr expr
              putStrLn "Input program:\n"
-             print $ pretty expr
+             putStrLn input
              putStrLn "\nType:"
              print $ pretty tp
              putStrLn "\nTransformed program:\n"

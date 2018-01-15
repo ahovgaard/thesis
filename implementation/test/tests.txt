@@ -1,8 +1,51 @@
--- Simple call to a local first-order function. Program should stay unchanged.
+--------------------------------------------------------------------------------
+-- Fully applied calls to first-order functions
+--------------------------------------------------------------------------------
+--
+-- Simple call to a local first-order function.
+-- Program should stay unchanged.
 let f = \x:int. x+x
 in f 1 + f 2
 
+-- We can equivalently use parameters in let rather than lambda.
+let f (x:int) = x+x
+in f 1 + f 2
 
+-- It works the same with multiple arguments and mixed let parameters
+-- and lambdas.
+let f (x:int) (b:bool) (y:int) = \z:int. if b then x+y+z else 42
+in f 1 true 2 3
+
+
+--------------------------------------------------------------------------------
+-- Simple functional arguments
+--------------------------------------------------------------------------------
+--
+-- First-order function parameter with bound function as argument.
+let add1 (x:int) = x+1
+in let f (g : int->int) = g 42
+   in f add1
+
+-- First-order function parameter with lambda as argument.
+let f = \g:int->int. g 42
+in f (\x:int. x+x)
+
+-- Another simple example with a functional argument.
+let add1 = \y:int. y+1
+in let twice = \g:int->int. \x:int. g (g x)
+   in twice add1 5
+
+-- Function composition.
+let add1 (y:int)   = y + 1 in
+let double (z:int) = z + z in
+let compose (f:int->int) (g:int->int) (x:int) = f (g x)
+in compose add1 double 7
+
+
+--------------------------------------------------------------------------------
+-- Dynamic functions and partial application
+--------------------------------------------------------------------------------
+--
 -- Two calls to a local function of which the outermost abstraction can be
 -- preserved, so the (partial) calls "f 1" and "f 3" are preserved and returns a
 -- record. It would be better if only one lifted function was created.
@@ -32,6 +75,34 @@ in let g = f
    in g 1 2 3
 
 
+-- Partial application of first-order let-bound function.  We expect to see two
+-- new lifted functions: one which takes two arguments "x" and "y" and captures
+-- them in a record, and another which takes a record of "x" and "y" and a third
+-- argument "z" and computes the lambda body.
+let f = \x:int. \y:int. \z:int. x+y+z
+in let g = f 1 2 in g 3
+
+
+-- Partial application of a local first-order function inside a record.
+let f = \x:int. \y:int. x+y
+in let r = { a = 42, b = f 1, c = \z:int. z+z }
+   in (#c r) 2 + (#b r) 3
+
+
+-- Nested application (was broken in the original depth counting approach).
+(#g { g = let f = \x:int. \y:int. x+y in f 1 }) 2
+
+
+-- Partially applied dynamic function with many arguments.
+let f (a:int) (b:int) (c:int) (d:int) = a+b+c+d
+in let g = f 1 2
+   in g 3 4
+
+
+--------------------------------------------------------------------------------
+-- Closures inside closures
+--------------------------------------------------------------------------------
+--
 -- A local function with a free variable that itself is a function that closes
 -- over its own local variables, i.e., a closure inside a closure environment.
 let f = let b = 2 in
@@ -70,6 +141,20 @@ let f = let g = let h = let a = 1 in
 in f 5
 
 
+-- More complicated nesting of local functions.
+let f = let a = 2 in
+        let g = \x:int. x + a in
+        let h = let b = 1 in
+                let k = \y:int. (g y) + b + a
+                in \z:int. k a + z
+        in \n:int. h n + a
+in f 42
+
+
+--------------------------------------------------------------------------------
+-- Pairs and records
+--------------------------------------------------------------------------------
+--
 -- A pair containing a function and a projection followed by an application.
 let t = let y = 1
         in (\z:int. y+z, 10)
@@ -89,30 +174,10 @@ let r = let a = 1 in
 in (#f r) 1 + (#g r) 2
 
 
--- Partial application of first-order let-bound function.  We expect to see two
--- new lifted functions: one which takes two arguments "x" and "y" and captures
--- them in a record, and another which takes a record of "x" and "y" and a third
--- argument "z" and computes the lambda body.
-let f = \x:int. \y:int. \z:int. x+y+z
-in let g = f 1 2 in g 3
-
-
--- Partial application of a local first-order function inside a record.
-let f = \x:int. \y:int. x+y
-in let r = { a = 42, b = f 1, c = \z:int. z+z }
-   in (#c r) 2 + (#b r) 3
-
-
--- Nested application (broken, result is not first-order).
-(#g { g = let f = \x:int. \y:int. x+y in f 1 }) 2
-
-
--- Simple functional argument.
-let add1 = \y:int. y+1
-in let twice = \g:int->int. \x:int. g (g x)
-   in twice add1 5
-
-
+--------------------------------------------------------------------------------
+-- More complicated higher-order functional arguments
+--------------------------------------------------------------------------------
+--
 -- id id id
 let id1 = \x:int. x
 in let id2 = \y:int->int. y
@@ -141,3 +206,9 @@ in f 5 (\y:int. y+1)
 -- Same but using parameters in let instead of lambda's.
 let f (x:int) (g:int->int) = g (g x)
 in f 5 (\y:int. y+1)
+
+
+-- Partially dynamic function with higher-order argument.
+let f (x:int) (g:(int->int)->int) = g (\y:int.y+y) + x
+in let h (k:int->int) = k 7
+   in f 42 h
