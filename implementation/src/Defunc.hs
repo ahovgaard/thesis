@@ -172,9 +172,10 @@ defunc expr = case expr of
   Length e1         -> do (e1', _) <- defuncDynamic e1
                           return (Length e1', Dynamic TpInt)
 
-  Loop x e1 y e2 e3 -> do (e1', _  ) <- defuncDynamic e1
-                          (e2', _  ) <- defuncDynamic e2
-                          (e3', sv3) <- defuncDynamic e3
+  Loop x e1 y e2 e3 -> do (e1', sv1) <- defuncDynamic e1
+                          (e2', sv2) <- defuncDynamic e2
+                          (e3', sv3) <- local (extendEnv x sv1 . extendEnv y sv2)
+                                              (defuncDynamic e3)
                           return (Loop x e1' y e2' e3', sv3)
 
 
